@@ -46,24 +46,9 @@ pip install zarr
 ## Running
 
 ### Running locally
-
-**Option A: Activate environment first (recommended)**:
 ```bash
-source $(poetry env info --path)/bin/activate
 python train.py --config-dir=config/grasp_two_bins_flat/same_middle_same_return/basic_training --config-name=2_obs.yaml hydra.run.dir=data/outputs/grasp_two_bins_flat/same_middle_same_return/basic_training/2_obs/
 ```
-
-**Option B: Use poetry run directly**:
-```bash
-poetry run python train.py --config-dir=config/grasp_two_bins_flat/same_middle_same_return/basic_training --config-name=2_obs.yaml hydra.run.dir=data/outputs/grasp_two_bins_flat/same_middle_same_return/basic_training/2_obs/
-```
-
-**Option C: If you have the shell plugin installed**:
-```bash
-poetry shell
-python train.py --config-dir=config/grasp_two_bins_flat/same_middle_same_return/basic_training --config-name=2_obs.yaml hydra.run.dir=data/outputs/grasp_two_bins_flat/same_middle_same_return/basic_training/2_obs/
-```
-
 
 ### Running on Supercloud:
 ```bash
