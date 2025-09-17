@@ -58,9 +58,13 @@ python train.py --config-dir=config/planar_pushing --config-name=2_obs.yaml hydr
 ```bash
 # Interactively:
 LLsub -i full
+module load anaconda/2023b
+wandb offline  # Supercloud compute nodes have no internet
 python train.py --config-dir=config/planar_pushing --config-name=2_obs.yaml hydra.run.dir=data/outputs/planar_pushing/2_obs/
 
 # Non-interactively:
+module load anaconda/2023b
+wandb offline  # Supercloud compute nodes have no internet
 LLsub ./submit_training.sh -s 20 -g volta:1
 ```
 

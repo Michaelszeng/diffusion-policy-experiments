@@ -105,7 +105,7 @@ policy:  # Parameters to be passed to policy (i.e. the _target_ policy class bel
   pretrained_encoder: false
 task:
   dataset:
-    _target_: diffusion_policy.dataset.planar_pushing_dataset.PlanarPushingDataset
+    _target_: diffusion_policy.dataset.planar_pushing_dataset_improved_sampling.PlanarPushingDataset
     shape_meta: ${shape_meta}
     horizon: 16
     n_obs_steps: 2

@@ -11,7 +11,7 @@ from torchvision import transforms
 from diffusion_policy.common.normalize_util import get_image_range_normalizer
 from diffusion_policy.common.pytorch_util import dict_apply
 from diffusion_policy.common.replay_buffer import ReplayBuffer
-from diffusion_policy.common.sampler import SequenceSampler, downsample_mask, get_val_mask
+from diffusion_policy.common.sampler import ImprovedDatasetSampler, downsample_mask, get_val_mask
 from diffusion_policy.dataset.base_dataset import BaseImageDataset
 from diffusion_policy.model.common.normalizer import LinearNormalizer
 
@@ -122,10 +122,21 @@ class PlanarPushingDataset(BaseImageDataset):
             self.val_masks.append(val_mask)
 
             # Set up sampler
+            # self.samplers.append(
+            #     SequenceSampler(
+            #         replay_buffer=self.replay_buffers[-1],
+            #         sequence_length=horizon,
+            #         pad_before=pad_before,
+            #         pad_after=pad_after,
+            #         episode_mask=train_mask,
+            #         key_first_k=key_first_k
+            #     )
+            # )
             self.samplers.append(
-                SequenceSampler(
+                ImprovedDatasetSampler(
                     replay_buffer=self.replay_buffers[-1],
                     sequence_length=horizon,
+                    shape_meta=shape_meta,
                     pad_before=pad_before,
                     pad_after=pad_after,
                     episode_mask=train_mask,
@@ -180,10 +191,18 @@ class PlanarPushingDataset(BaseImageDataset):
         val_set.one_hot_encoding = np.zeros(self.num_datasets).astype(np.float32)
         val_set.one_hot_encoding[index] = 1
 
+        # val_set.samplers = [SequenceSampler(
+        #     replay_buffer=self.replay_buffers[index],
+        #     sequence_length=self.horizon,
+        #     pad_before=self.pad_before,
+        #     pad_after=self.pad_after,
+        #     episode_mask=self.val_masks[index]
+        # )]
         val_set.samplers = [
-            SequenceSampler(
+            ImprovedDatasetSampler(
                 replay_buffer=self.replay_buffers[index],
                 sequence_length=self.horizon,
+                shape_meta=self.shape_meta,
                 pad_before=self.pad_before,
                 pad_after=self.pad_after,
                 episode_mask=self.val_masks[index],
@@ -334,14 +353,14 @@ class PlanarPushingDataset(BaseImageDataset):
         if self.num_datasets == 1:
             sampler_idx = 0
             sampler = self.samplers[sampler_idx]
-            sample = sampler.sample_sequence(idx)
+            data = sampler.sample_data(idx)
         else:
             sampler_idx = np.random.choice(self.num_datasets, p=self.sample_probabilities)
             sampler = self.samplers[sampler_idx]
-            sample = sampler.sample_sequence(idx % len(sampler))
+            data = sampler.sample_data(idx % len(sampler))
 
         # Process sample
-        data = self._sample_to_data(sample, sampler_idx)
+        # data = self._sample_to_data(sample, sampler_idx)
         torch_data = dict_apply(data, torch.from_numpy)
         return torch_data
 
@@ -360,8 +379,14 @@ if __name__ == "__main__":
         },
     }
     zarr_configs = [
+        # {
+        #     'path': 'data/planar_pushing/underactuated_data.zarr',
+        #     'max_train_episodes': None,
+        #     'sampling_weight': 1.0
+        # },
         {
-            "path": "data/diffusion_experiments/planar_pushing/sim_sim_tee_data_carbon_large.zarr",
+            # 'path': 'data/planar_pushing_cotrain/visual_mean_shift/visual_mean_shift_level_2.zarr',
+            "path": "data/planar_pushing_cotrain/sim_sim_tee_data_carbon_large.zarr",
             "max_train_episodes": None,
             "sampling_weight": 1.0,
         }

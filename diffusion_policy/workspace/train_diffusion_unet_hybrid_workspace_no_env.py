@@ -287,9 +287,9 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                     for batch_idx, batch in enumerate(tepoch):
                         # device transfer
                         batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
-                        # # reorder channels from HWC to CHW to match robomimic's vision encoder
-                        # for key in dataset.rgb_keys:
-                        #     batch["obs"][key] = torch.moveaxis(batch["obs"][key], -1, 2) / 255.0
+                        # reorder channels from HWC to CHW to match robomimic's vision encoder
+                        for key in dataset.rgb_keys:
+                            batch["obs"][key] = torch.moveaxis(batch["obs"][key], -1, 2) / 255.0
                         batch_size = batch["action"].shape[0]
                         # print(f"Outside batch size: {batch_size}")
 
@@ -389,9 +389,9 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                             ) as tepoch:
                                 for batch_idx, batch in enumerate(tepoch):
                                     batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
-                                    # # reorder channels from HWC to CHW to match robomimic's vision encoder
-                                    # for key in dataset.rgb_keys:
-                                    #     batch["obs"][key] = torch.moveaxis(batch["obs"][key], -1, 2) / 255.0
+                                    # reorder channels from HWC to CHW to match robomimic's vision encoder
+                                    for key in dataset.rgb_keys:
+                                        batch["obs"][key] = torch.moveaxis(batch["obs"][key], -1, 2) / 255.0
                                     if val_sampling_batches[dataset_idx] is None:
                                         val_sampling_batches[dataset_idx] = batch
                                     loss = self.model.compute_loss(batch)
