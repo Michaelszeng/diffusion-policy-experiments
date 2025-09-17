@@ -51,14 +51,14 @@ Obtain `sim_sim_tee_data_carbon_large.zarr` from Adam Wei. Place in `data/diffus
 
 ### Running locally
 ```bash
-python train.py --config-dir=config/grasp_two_bins_flat/same_middle_same_return/basic_training --config-name=2_obs.yaml hydra.run.dir=data/outputs/grasp_two_bins_flat/same_middle_same_return/basic_training/2_obs/
+python train.py --config-dir=config/planar_pushing --config-name=2_obs.yaml hydra.run.dir=data/outputs/planar_pushing/2_obs/
 ```
 
 ### Running on Supercloud:
 ```bash
 # Interactively:
 LLsub -i full
-python train.py --config-dir=config/grasp_two_bins_flat/same_middle_same_return/basic_training --config-name=2_obs.yaml hydra.run.dir=data/outputs/grasp_two_bins_flat/same_middle_same_return/basic_training/2_obs/
+python train.py --config-dir=config/planar_pushing --config-name=2_obs.yaml hydra.run.dir=data/outputs/planar_pushing/2_obs/
 
 # Non-interactively:
 LLsub ./submit_training.sh -s 20 -g volta:1

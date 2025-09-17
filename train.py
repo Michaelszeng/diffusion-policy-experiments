@@ -7,12 +7,12 @@ python train.py --config-dir=config --config-name=<config_name> \
 """
 
 import os
-import pathlib
 import sys
 
 import hydra
-from diffusion_policy.workspace.base_workspace import BaseWorkspace
 from omegaconf import OmegaConf
+
+from diffusion_policy.workspace.base_workspace import BaseWorkspace
 
 # Set HYDRA_FULL_ERROR=1 for detailed error reporting
 os.environ["HYDRA_FULL_ERROR"] = "1"
@@ -27,9 +27,7 @@ OmegaConf.register_new_resolver("eval", eval, replace=True)
 
 @hydra.main(
     version_base=None,
-    config_path=str(
-        pathlib.Path(__file__).parent.joinpath("diffusion_policy", "config")
-    ),
+    config_path=None,
 )
 def main(cfg: OmegaConf):
     # resolve immediately so all the ${now:} resolvers

@@ -36,7 +36,6 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         n_obs_steps,
         one_hot_encoding_dim=0,
         num_inference_steps=None,
-        obs_as_global_cond=True,
         use_target_cond=False,
         target_dim=None,
         crop_shape=(76, 76),
@@ -54,6 +53,7 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         initialize_obs_encoder=None,
         freeze_self_trained_obs_encoder=False,
         inference_loading=False,
+        past_action_visible=False,
         # parameters passed to step
         **kwargs,
     ):
@@ -67,7 +67,6 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         if use_target_cond:
             assert target_dim is not None
         assert one_hot_encoding_dim >= 0
-        assert obs_as_global_cond
 
         # parse shape_meta
         action_shape = shape_meta["action"]["shape"]
@@ -166,12 +165,8 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
             project_obs_embedding = False
 
         # create diffusion model
-        # obs_feature_dim = obs_encoder.output_shape()[0]
-        input_dim = action_dim + obs_feature_dim
-        global_cond_dim = None
-        if obs_as_global_cond:
-            input_dim = action_dim
-            global_cond_dim = obs_feature_dim * n_obs_steps + one_hot_encoding_dim
+        input_dim = action_dim
+        global_cond_dim = obs_feature_dim * n_obs_steps + one_hot_encoding_dim
         print(f"Input dim: {input_dim}, Global cond dim: {global_cond_dim}")
 
         model = ConditionalUnet1D(
@@ -215,10 +210,10 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
 
         self.mask_generator = LowdimMaskGenerator(
             action_dim=action_dim,
-            obs_dim=0 if obs_as_global_cond else obs_feature_dim,
+            obs_dim=0,  # Using Global Observation Conditioning so obs_dim per timestep is 0
             max_n_obs_steps=n_obs_steps,
             fix_obs_steps=True,
-            action_visible=False,
+            action_visible=past_action_visible,
         )
         self.normalizer = LinearNormalizer()  # Empty normalizer; parameters will be set later
         self.horizon = horizon
@@ -227,7 +222,6 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         self.action_dim = action_dim
         self.n_action_steps = n_action_steps
         self.n_obs_steps = n_obs_steps
-        self.obs_as_global_cond = obs_as_global_cond
         self.one_hot_encoding_dim = one_hot_encoding_dim
         self.use_target_cond = use_target_cond
         self.kwargs = kwargs
@@ -241,12 +235,13 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         if project_obs_embedding:
             print("Vision projector params: %e" % sum(p.numel() for p in self.obs_embedding_projector.parameters()))
 
-    # ========= inference  ============
+    ####################################################################################################################
+    ### Inference
+    ####################################################################################################################
     def conditional_sample(
         self,
         condition_data,
         condition_mask,
-        local_cond=None,
         global_cond=None,
         target_cond=None,
         generator=None,
@@ -254,6 +249,31 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         # keyword arguments to scheduler.step
         **kwargs,
     ):
+        """
+        DDPM sampling.
+
+        Args:
+            condition_data (torch.Tensor): Known values to condition on (e.g., observed actions)
+                                        Shape: [B, T, Da] where some timesteps may be known
+            condition_mask (torch.Tensor): Boolean mask indicating which values in condition_data
+                                        are known/should be enforced. Shape: [B, T, Da]
+            global_cond (torch.Tensor): Observation features from vision encoder. Shape: [B, Do]
+            target_cond (torch.Tensor): Goal/target conditioning. Shape: [B, target_dim]
+            generator (torch.Generator): RNG
+            use_DDIM (bool): DDIM vs DDPM
+            **kwargs: Additional arguments passed to scheduler.step()
+
+        Returns:
+            torch.Tensor: Generated action trajectory. Shape: [B, T, Da]
+                        Clean action sequence ready for robot execution
+
+        Note:
+            - This implements classifier-free guidance through conditioning
+            - condition_mask typically masks out future actions, leaving model to predict them
+            - global_cond encodes "what I see" (current observations)
+            - target_cond encodes "what I want" (goal state)
+            - The result is "what I should do" (action sequence)
+        """
         model = self.model
         if use_DDIM:
             scheduler = self.DDIM_noise_scheduler
@@ -267,7 +287,7 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
             dtype=condition_data.dtype,
             device=condition_data.device,
             generator=generator,
-        )
+        )  # Start with random noise trajectory
 
         for t in scheduler.timesteps:
             # 1. apply conditioning
@@ -277,7 +297,7 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
             model_output = model(
                 trajectory,
                 t,
-                local_cond=local_cond,
+                local_cond=None,
                 global_cond=global_cond,
                 target_cond=target_cond,
             )
@@ -348,37 +368,19 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         device = self.device
         dtype = self.dtype
 
-        # handle different ways of passing observation
-        local_cond = None
-        global_cond = None
-        if self.obs_as_global_cond:
-            # condition through global feature
-            this_nobs = dict_apply(nobs, lambda x: x[:, :To, ...].reshape(-1, *x.shape[2:]))
-            nobs_features = self.obs_encoder(this_nobs)
-            if self.project_obs_embedding:
-                nobs_features = self.obs_embedding_projector(nobs_features)
-            # reshape back to B, Do
-            global_cond = nobs_features.reshape(B, -1)
-            # empty data for action
-            cond_data = torch.zeros(size=(B, T, Da), device=device, dtype=dtype)
-            cond_mask = torch.zeros_like(cond_data, dtype=torch.bool)
-        else:
-            # condition through inpainting
-            this_nobs = dict_apply(nobs, lambda x: x[:, :To, ...].reshape(-1, *x.shape[2:]))
-            nobs_features = self.obs_encoder(this_nobs)
-            if self.project_obs_embedding:
-                nobs_features = self.obs_embedding_projector(nobs_features)
-            # reshape back to B, To, Do
-            nobs_features = nobs_features.reshape(B, To, -1)
-            cond_data = torch.zeros(size=(B, T, Da + Do), device=device, dtype=dtype)
-            cond_mask = torch.zeros_like(cond_data, dtype=torch.bool)
-            cond_data[:, :To, Da:] = nobs_features
-            cond_mask[:, :To, Da:] = True
+        # condition through global feature
+        this_nobs = dict_apply(nobs, lambda x: x[:, :To, ...].reshape(-1, *x.shape[2:]))
+        nobs_features = self.obs_encoder(this_nobs)
+        if self.project_obs_embedding:
+            nobs_features = self.obs_embedding_projector(nobs_features)
+        # reshape back to B, Do
+        global_cond = nobs_features.reshape(B, -1)
+        # empty data for action
+        cond_data = torch.zeros(size=(B, T, Da), device=device, dtype=dtype)
+        cond_mask = torch.zeros_like(cond_data, dtype=torch.bool)
 
         # append one hot encoding
         if self.one_hot_encoding_dim > 0:
-            # currently only supporting global conditioning
-            assert self.obs_as_global_cond
             one_hot_encoding = obs_dict["one_hot_encoding"]
             global_cond = torch.cat([global_cond, one_hot_encoding], dim=-1)
 
@@ -391,7 +393,6 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         nsample = self.conditional_sample(
             cond_data,
             cond_mask,
-            local_cond=local_cond,
             global_cond=global_cond,
             target_cond=target_cond,
             use_DDIM=use_DDIM,
@@ -416,40 +417,24 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         key = next(iter(nobs.keys()))
         batch_size = nobs[key].shape[0]
 
-        # handle different ways of passing observation
-        if self.obs_as_global_cond:
-            # reshape B, T, ... to B*T
-            this_nobs = dict_apply(nobs, lambda x: x[:, : self.n_obs_steps, ...].reshape(-1, *x.shape[2:]))
-            nobs_features = self.obs_encoder(this_nobs)
-            if self.project_obs_embedding:
-                nobs_features = self.obs_embedding_projector(nobs_features)
-            # reshape back to B, Do
-            global_cond = nobs_features.reshape(batch_size, -1)
-        else:
-            nactions = self.normalizer["action"].normalize(batch["action"])
-            horizon = nactions.shape[1]
-            trajectory = nactions
-            cond_data = trajectory
-            # reshape B, T, ... to B*T
-            this_nobs = dict_apply(nobs, lambda x: x.reshape(-1, *x.shape[2:]))
-            nobs_features = self.obs_encoder(this_nobs)
-            if self.project_obs_embedding:
-                nobs_features = self.obs_embedding_projector(nobs_features)
-            # reshape back to B, T, Do
-            nobs_features = nobs_features.reshape(batch_size, horizon, -1)
-            cond_data = torch.cat([nactions, nobs_features], dim=-1)
-            trajectory = cond_data.detach()
+        # reshape B, T, ... to B*T
+        this_nobs = dict_apply(nobs, lambda x: x[:, : self.n_obs_steps, ...].reshape(-1, *x.shape[2:]))
+        nobs_features = self.obs_encoder(this_nobs)
+        if self.project_obs_embedding:
+            nobs_features = self.obs_embedding_projector(nobs_features)
+        # reshape back to B, Do
+        global_cond = nobs_features.reshape(batch_size, -1)
 
         # append one hot encoding
         if self.one_hot_encoding_dim > 0:
-            # currently only supporting global conditioning
-            assert self.obs_as_global_cond
             one_hot_encoding = batch["one_hot_encoding"]
             global_cond = torch.cat([global_cond, one_hot_encoding], dim=-1)
 
         return global_cond
 
-    # ========= training  ============
+    ####################################################################################################################
+    ### Training
+    ####################################################################################################################
     def set_normalizer(self, normalizer: LinearNormalizer):
         """Set normalizer's parameters based on dataset."""
         self.normalizer.load_state_dict(normalizer.state_dict())
@@ -465,60 +450,39 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         horizon = nactions.shape[1]
 
         # handle different ways of passing observation
-        local_cond = None
         global_cond = None
-        trajectory = nactions
-        cond_data = trajectory
-        if self.obs_as_global_cond:
-            # reshape B, T, ... to B*T
-            this_nobs = dict_apply(nobs, lambda x: x[:, : self.n_obs_steps, ...].reshape(-1, *x.shape[2:]))
-            nobs_features = self.obs_encoder(this_nobs)
-            if self.project_obs_embedding:
-                nobs_features = self.obs_embedding_projector(nobs_features)
-            # reshape back to B, Do
-            global_cond = nobs_features.reshape(batch_size, -1)
+        # reshape B, T, ... to B*T
+        this_nobs = dict_apply(nobs, lambda x: x[:, : self.n_obs_steps, ...].reshape(-1, *x.shape[2:]))
+        nobs_features = self.obs_encoder(this_nobs)
+        if self.project_obs_embedding:
+            nobs_features = self.obs_embedding_projector(nobs_features)
+        # reshape back to B, Do
+        global_cond = nobs_features.reshape(batch_size, -1)
 
         return global_cond, nobs_features
 
     def forward(self, batch, noisy_trajectory, timesteps):
         assert "valid_mask" not in batch
         nobs = self.normalizer.normalize(batch["obs"])
+        nactions = self.normalizer["action"].normalize(batch["action"])
         ntarget = None
         if self.use_target_cond:
             ntarget = self.normalizer["target"].normalize(batch["target"])
-        nactions = self.normalizer["action"].normalize(batch["action"])
         batch_size = nactions.shape[0]
         horizon = nactions.shape[1]
-        # print(f"Inside batch size: {batch_size}")
 
         # handle different ways of passing observation
-        local_cond = None
         global_cond = None
-        trajectory = nactions
-        cond_data = trajectory
-        if self.obs_as_global_cond:
-            # reshape B, T, ... to B*T
-            this_nobs = dict_apply(nobs, lambda x: x[:, : self.n_obs_steps, ...].reshape(-1, *x.shape[2:]))
-            nobs_features = self.obs_encoder(this_nobs)
-            if self.project_obs_embedding:
-                nobs_features = self.obs_embedding_projector(nobs_features)
-            # reshape back to B, Do
-            global_cond = nobs_features.reshape(batch_size, -1)
-        else:
-            # reshape B, T, ... to B*T
-            this_nobs = dict_apply(nobs, lambda x: x.reshape(-1, *x.shape[2:]))
-            nobs_features = self.obs_encoder(this_nobs)
-            if self.project_obs_embedding:
-                nobs_features = self.obs_embedding_projector(nobs_features)
-            # reshape back to B, T, Do
-            nobs_features = nobs_features.reshape(batch_size, horizon, -1)
-            cond_data = torch.cat([nactions, nobs_features], dim=-1)
-            trajectory = cond_data.detach()
+        # reshape B, T, ... to B*T
+        this_nobs = dict_apply(nobs, lambda x: x[:, : self.n_obs_steps, ...].reshape(-1, *x.shape[2:]))
+        nobs_features = self.obs_encoder(this_nobs)
+        if self.project_obs_embedding:
+            nobs_features = self.obs_embedding_projector(nobs_features)
+        # reshape back to B, Do
+        global_cond = nobs_features.reshape(batch_size, -1)
 
         # append one hot encoding
         if self.one_hot_encoding_dim > 0:
-            # currently only supporting global conditioning
-            assert self.obs_as_global_cond
             one_hot_encoding = batch["one_hot_encoding"]
             global_cond = torch.cat([global_cond, one_hot_encoding], dim=-1)
 
@@ -531,13 +495,11 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         return self.model(
             noisy_trajectory,
             timesteps,
-            local_cond=local_cond,
             global_cond=global_cond,
             target_cond=target_cond,
         )
 
-    # Completely redundant/replaced by forward method combined with
-    # TrainDiffusionUnetHybridWorkspaceNoEnv.compute_loss().
+    # Completely redundant w/ forward method combined with TrainDiffusionUnetHybridWorkspaceNoEnv.compute_loss().
     def compute_loss(self, batch):
         # normalize input
         assert "valid_mask" not in batch
@@ -550,33 +512,19 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         horizon = nactions.shape[1]
 
         # handle different ways of passing observation
-        local_cond = None
         global_cond = None
         trajectory = nactions
         cond_data = trajectory
-        if self.obs_as_global_cond:
-            # reshape B, T, ... to B*T
-            this_nobs = dict_apply(nobs, lambda x: x[:, : self.n_obs_steps, ...].reshape(-1, *x.shape[2:]))
-            nobs_features = self.obs_encoder(this_nobs)
-            if self.project_obs_embedding:
-                nobs_features = self.obs_embedding_projector(nobs_features)
-            # reshape back to B, Do
-            global_cond = nobs_features.reshape(batch_size, -1)
-        else:
-            # reshape B, T, ... to B*T
-            this_nobs = dict_apply(nobs, lambda x: x.reshape(-1, *x.shape[2:]))
-            nobs_features = self.obs_encoder(this_nobs)
-            if self.project_obs_embedding:
-                nobs_features = self.obs_embedding_projector(nobs_features)
-            # reshape back to B, T, Do
-            nobs_features = nobs_features.reshape(batch_size, horizon, -1)
-            cond_data = torch.cat([nactions, nobs_features], dim=-1)
-            trajectory = cond_data.detach()
+        # reshape B, T, ... to B*T
+        this_nobs = dict_apply(nobs, lambda x: x[:, : self.n_obs_steps, ...].reshape(-1, *x.shape[2:]))
+        nobs_features = self.obs_encoder(this_nobs)
+        if self.project_obs_embedding:
+            nobs_features = self.obs_embedding_projector(nobs_features)
+        # reshape back to B, Do
+        global_cond = nobs_features.reshape(batch_size, -1)
 
         # append one hot encoding
         if self.one_hot_encoding_dim > 0:
-            # currently only supporting global conditioning
-            assert self.obs_as_global_cond
             one_hot_encoding = batch["one_hot_encoding"]
             global_cond = torch.cat([global_cond, one_hot_encoding], dim=-1)
 
@@ -612,7 +560,6 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         pred = self.model(
             noisy_trajectory,
             timesteps,
-            local_cond=local_cond,
             global_cond=global_cond,
             target_cond=target_cond,
         )
