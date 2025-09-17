@@ -13,7 +13,6 @@ horizon: 16
 n_obs_steps: 2
 n_action_steps: 8
 n_latency_steps: 0
-dataset_obs_steps: ${n_obs_steps}
 past_action_visible: False
 keypoint_visible_rate: 1.0
 obs_as_global_cond: True
@@ -95,7 +94,7 @@ training:
   use_ema: True
   # training loop control
   # in epochs
-  rollout_every: 50
+  rollout_every: 5  # UNUSED -- no environment rollouts during training0
   checkpoint_every: 50
   val_every: 1
   sample_every: 5

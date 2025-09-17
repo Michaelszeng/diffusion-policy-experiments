@@ -149,7 +149,7 @@ training:
   num_epochs: 200 # 70 for 50, 2000; 200 for 50, 500
   total_train_steps: 50000
   resume: true
-  rollout_every: 5
+  rollout_every: 5  # UNUSED -- no environment rollouts during training
   sample_every: ${training.checkpoint_every}
   seed: 42
   tqdm_interval_sec: 10.0

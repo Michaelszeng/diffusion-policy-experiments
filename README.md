@@ -43,6 +43,10 @@ pip install einops
 pip install zarr
 ```
 
+### Obtaining Training Data
+Obtain `sim_sim_tee_data_carbon_large.zarr` from Adam Wei. Place in `data/diffusion_experiments/planar_pushing/sim_sim_tee_data_carbon_large.zarr` folder.
+
+
 ## Running
 
 ### Running locally

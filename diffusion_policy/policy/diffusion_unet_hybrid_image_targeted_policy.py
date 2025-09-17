@@ -7,17 +7,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 from diffusers.schedulers.scheduling_ddim import DDIMScheduler
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
-from diffusion_policy.common.robomimic_config_util import get_robomimic_config
-from diffusion_policy.model.diffusion.conditional_unet1d import ConditionalUnet1D
-from diffusion_policy.model.diffusion.mask_generator import LowdimMaskGenerator
-from diffusion_policy.model.mlp.mlp import MLP
 from einops import reduce
 from robomimic.algo import algo_factory
 from robomimic.algo.algo import PolicyAlgo
 
 import diffusion_policy.model.vision.crop_randomizer as dmvc
 from diffusion_policy.common.pytorch_util import dict_apply, replace_submodules
+from diffusion_policy.common.robomimic_config_util import get_robomimic_config
 from diffusion_policy.model.common.normalizer import LinearNormalizer
+from diffusion_policy.model.diffusion.conditional_unet1d import ConditionalUnet1D
+from diffusion_policy.model.diffusion.mask_generator import LowdimMaskGenerator
+from diffusion_policy.model.mlp.mlp import MLP
 from diffusion_policy.policy.base_image_policy import BaseImagePolicy
 
 
@@ -57,6 +57,11 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         # parameters passed to step
         **kwargs,
     ):
+        """
+        Args:
+            one_hot_encoding_dim: number of datasets (>=1),
+
+        """
         super().__init__()
 
         if use_target_cond:
@@ -115,7 +120,9 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         # init global state
         ObsUtils.initialize_obs_utils_with_config(config)
 
-        # load model
+        # We use the image encoder from robomimic
+        # This isn't clean, but we create a robomimic policy object and then
+        # just extract the image encoder.
         policy: PolicyAlgo = algo_factory(
             algo_name=config.algo_name,
             config=config,
@@ -123,23 +130,20 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
             ac_dim=action_dim,
             device="cuda" if torch.cuda.is_available() else "cpu",
         )
-
-        # extract the image encoder
         obs_encoder = policy.nets["policy"].nets["encoder"].nets["obs"]
 
         if obs_encoder_group_norm:
-            # replace batch norm with group norm
+            # This is a hack to get around the fact that the image encoder uses
+            # batch norm. We replace it with group norm.
             replace_submodules(
                 root_module=obs_encoder,
                 predicate=lambda x: isinstance(x, nn.BatchNorm2d),
-                func=lambda x: nn.GroupNorm(
-                    num_groups=x.num_features // 16, num_channels=x.num_features
-                ),
+                func=lambda x: nn.GroupNorm(num_groups=x.num_features // 16, num_channels=x.num_features),
             )
-            # obs_encoder.obs_nets['agentview_image'].nets[0].nets
 
-        # obs_encoder.obs_randomizers['agentview_image']
         if eval_fixed_crop:
+            # This is a hack to get around the fact that the image encoder uses
+            # crop randomizer. We replace it with our own crop randomizer.
             replace_submodules(
                 root_module=obs_encoder,
                 predicate=lambda x: isinstance(x, rmobsc.CropRandomizer),
@@ -154,12 +158,8 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
 
         if obs_embedding_dim is not None:
             obs_feature_dim = obs_embedding_dim
-            self.obs_embedding_projector = MLP(
-                obs_encoder.output_shape()[0], [], obs_feature_dim
-            )
-            self.obs_embedding_projector.to(
-                "cuda" if torch.cuda.is_available() else "cpu"
-            )
+            self.obs_embedding_projector = MLP(obs_encoder.output_shape()[0], [], obs_feature_dim)
+            self.obs_embedding_projector.to("cuda" if torch.cuda.is_available() else "cpu")
             project_obs_embedding = True
         else:
             obs_feature_dim = obs_encoder.output_shape()[0]
@@ -187,7 +187,7 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         )
 
         self.obs_encoder = obs_encoder
-        if inference_loading == False:
+        if not inference_loading:
             if initialize_obs_encoder is not None:
                 print(f"Loading obs encoder from {initialize_obs_encoder}")
                 state_dict = torch.load(initialize_obs_encoder, map_location="cpu")
@@ -220,7 +220,7 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
             fix_obs_steps=True,
             action_visible=False,
         )
-        self.normalizer = LinearNormalizer()
+        self.normalizer = LinearNormalizer()  # Empty normalizer; parameters will be set later
         self.horizon = horizon
         self.obs_feature_dim = obs_feature_dim
         self.project_obs_embedding = project_obs_embedding
@@ -237,14 +237,9 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         self.num_inference_steps = num_inference_steps
 
         print("Diffusion params: %e" % sum(p.numel() for p in self.model.parameters()))
-        print(
-            "Vision params: %e" % sum(p.numel() for p in self.obs_encoder.parameters())
-        )
+        print("Vision params: %e" % sum(p.numel() for p in self.obs_encoder.parameters()))
         if project_obs_embedding:
-            print(
-                "Vision projector params: %e"
-                % sum(p.numel() for p in self.obs_embedding_projector.parameters())
-            )
+            print("Vision projector params: %e" % sum(p.numel() for p in self.obs_embedding_projector.parameters()))
 
     # ========= inference  ============
     def conditional_sample(
@@ -288,31 +283,59 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
             )
 
             # 3. compute previous image: x_t -> x_t-1
-            trajectory = scheduler.step(
-                model_output, t, trajectory, generator=generator, **kwargs
-            ).prev_sample
+            trajectory = scheduler.step(model_output, t, trajectory, generator=generator, **kwargs).prev_sample
 
         # finally make sure conditioning is enforced
         trajectory[condition_mask] = condition_data[condition_mask]
 
         return trajectory
 
-    def predict_action(
-        self, obs_dict: Dict[str, torch.Tensor], use_DDIM=False
-    ) -> Dict[str, torch.Tensor]:
+    def predict_action(self, obs_dict: Dict[str, torch.Tensor], use_DDIM=False) -> Dict[str, torch.Tensor]:
         """
-        obs_dict: must include "obs"
-        - if use_target_cond is true, obs_dict must also include "target"
-        result: must include "action" key
+        Args:
+            obs_dict: Dict containing observation data with the following structure:
+                {
+                    "obs": {
+                        # Low-dimensional observations (robot state)
+                        "agent_pos": torch.Tensor,     # Shape: [B, To, 13] - robot state (6 DOF position + 6 DOF velocity + 1 DOF gripper)
+
+                        # RGB image observations
+                        "overhead_camera": torch.Tensor,  # Shape: [B, To, 3, 128, 128] - overhead RGB images
+                        "wrist_camera": torch.Tensor,     # Shape: [B, To, 3, 128, 128] - wrist RGB images
+                    },
+
+                    # only required if self.use_target_cond=True
+                    "target": torch.Tensor,            # Shape: [B, target_dim] - target
+                }
+
+            use_DDIM: Whether to use DDIM sampling instead of DDPM
+
+        Returns:
+            Dict[str, torch.Tensor]: Dictionary containing predicted actions:
+                {
+                    "action": torch.Tensor  # Shape: [B, Ta, Da] - predicted action sequence
+                }
+
+        Where:
+            B = batch size
+            To = n_obs_steps (number of observation timesteps, e.g., 2)
+            Ta = n_action_steps (number of predicted action timesteps, e.g., 8)
+            Da = action_dim (action space dimensionality, e.g., 13)
+            target_dim = dimensionality of goal/target (e.g., 3 for 3D position)
+
+        Note:
+            - The specific keys and shapes in obs_dict["obs"] are determined by the shape_meta configuration
         """
         assert "obs" in obs_dict
         if self.use_target_cond:
             assert "target" in obs_dict
         assert "past_action" not in obs_dict  # not implemented yet
-        # normalize input
+
+        # Normalize obs dict
         nobs = self.normalizer.normalize(obs_dict["obs"])
         ntarget = None
         if self.use_target_cond:
+            # Normalize target tensor
             ntarget = self.normalizer["target"].normalize(obs_dict["target"])
         value = next(iter(nobs.values()))
         B, To = value.shape[:2]
@@ -330,9 +353,7 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         global_cond = None
         if self.obs_as_global_cond:
             # condition through global feature
-            this_nobs = dict_apply(
-                nobs, lambda x: x[:, :To, ...].reshape(-1, *x.shape[2:])
-            )
+            this_nobs = dict_apply(nobs, lambda x: x[:, :To, ...].reshape(-1, *x.shape[2:]))
             nobs_features = self.obs_encoder(this_nobs)
             if self.project_obs_embedding:
                 nobs_features = self.obs_embedding_projector(nobs_features)
@@ -342,10 +363,8 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
             cond_data = torch.zeros(size=(B, T, Da), device=device, dtype=dtype)
             cond_mask = torch.zeros_like(cond_data, dtype=torch.bool)
         else:
-            # condition through impainting
-            this_nobs = dict_apply(
-                nobs, lambda x: x[:, :To, ...].reshape(-1, *x.shape[2:])
-            )
+            # condition through inpainting
+            this_nobs = dict_apply(nobs, lambda x: x[:, :To, ...].reshape(-1, *x.shape[2:]))
             nobs_features = self.obs_encoder(this_nobs)
             if self.project_obs_embedding:
                 nobs_features = self.obs_embedding_projector(nobs_features)
@@ -400,9 +419,7 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         # handle different ways of passing observation
         if self.obs_as_global_cond:
             # reshape B, T, ... to B*T
-            this_nobs = dict_apply(
-                nobs, lambda x: x[:, : self.n_obs_steps, ...].reshape(-1, *x.shape[2:])
-            )
+            this_nobs = dict_apply(nobs, lambda x: x[:, : self.n_obs_steps, ...].reshape(-1, *x.shape[2:]))
             nobs_features = self.obs_encoder(this_nobs)
             if self.project_obs_embedding:
                 nobs_features = self.obs_embedding_projector(nobs_features)
@@ -434,6 +451,7 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
 
     # ========= training  ============
     def set_normalizer(self, normalizer: LinearNormalizer):
+        """Set normalizer's parameters based on dataset."""
         self.normalizer.load_state_dict(normalizer.state_dict())
 
     def get_encoder_output(self, batch):
@@ -445,7 +463,6 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         nactions = self.normalizer["action"].normalize(batch["action"])
         batch_size = nactions.shape[0]
         horizon = nactions.shape[1]
-        # print(f"Inside batch size: {batch_size}")
 
         # handle different ways of passing observation
         local_cond = None
@@ -454,9 +471,7 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         cond_data = trajectory
         if self.obs_as_global_cond:
             # reshape B, T, ... to B*T
-            this_nobs = dict_apply(
-                nobs, lambda x: x[:, : self.n_obs_steps, ...].reshape(-1, *x.shape[2:])
-            )
+            this_nobs = dict_apply(nobs, lambda x: x[:, : self.n_obs_steps, ...].reshape(-1, *x.shape[2:]))
             nobs_features = self.obs_encoder(this_nobs)
             if self.project_obs_embedding:
                 nobs_features = self.obs_embedding_projector(nobs_features)
@@ -483,9 +498,7 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         cond_data = trajectory
         if self.obs_as_global_cond:
             # reshape B, T, ... to B*T
-            this_nobs = dict_apply(
-                nobs, lambda x: x[:, : self.n_obs_steps, ...].reshape(-1, *x.shape[2:])
-            )
+            this_nobs = dict_apply(nobs, lambda x: x[:, : self.n_obs_steps, ...].reshape(-1, *x.shape[2:]))
             nobs_features = self.obs_encoder(this_nobs)
             if self.project_obs_embedding:
                 nobs_features = self.obs_embedding_projector(nobs_features)
@@ -543,9 +556,7 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         cond_data = trajectory
         if self.obs_as_global_cond:
             # reshape B, T, ... to B*T
-            this_nobs = dict_apply(
-                nobs, lambda x: x[:, : self.n_obs_steps, ...].reshape(-1, *x.shape[2:])
-            )
+            this_nobs = dict_apply(nobs, lambda x: x[:, : self.n_obs_steps, ...].reshape(-1, *x.shape[2:]))
             nobs_features = self.obs_encoder(this_nobs)
             if self.project_obs_embedding:
                 nobs_features = self.obs_embedding_projector(nobs_features)

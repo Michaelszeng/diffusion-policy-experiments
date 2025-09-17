@@ -3,6 +3,15 @@ import torch.nn as nn
 
 
 class DictOfTensorMixin(nn.Module):
+    """
+    Mixin that allows a class to store nested dictionary of tensors that
+    persist through checkpoint saving and loading.
+
+    This is needed because pytorch's saving mechanisms flattens nested ParameterDicts
+    into dot-separated keys. `_load_from_state_dict` rebuilds the nested ParameterDicts
+    structure on the fly by inspecting the dot-separated keys.
+    """
+
     def __init__(self, params_dict=None):
         super().__init__()
         if params_dict is None:
@@ -23,6 +32,10 @@ class DictOfTensorMixin(nn.Module):
         unexpected_keys,
         error_msgs,
     ):
+        """
+        This is an override for pytorch nn.Module._load_from_state_dict.
+        """
+
         def dfs_add(dest, keys, value: torch.Tensor):
             if len(keys) == 1:
                 dest[keys[0]] = value
@@ -38,8 +51,6 @@ class DictOfTensorMixin(nn.Module):
                 value: torch.Tensor
                 if key.startswith(prefix):
                     param_keys = key[len(prefix) :].split(".")[1:]
-                    # if len(param_keys) == 0:
-                    #     import pdb; pdb.set_trace()
                     dfs_add(out_dict, param_keys, value.clone())
             return out_dict
 

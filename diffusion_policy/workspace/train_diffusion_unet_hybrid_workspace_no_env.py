@@ -19,20 +19,18 @@ import torch
 import torch.nn.functional as F
 import tqdm
 import wandb
-
-# from diffusion_policy.env_runner.base_image_runner import BaseImageRunner
-from diffusion_policy.common.checkpoint_util import TopKCheckpointManager
-from diffusion_policy.common.json_logger import JsonLogger
-from diffusion_policy.common.pytorch_util import dict_apply, optimizer_to
-from diffusion_policy.dataset.base_dataset import BaseImageDataset
-from diffusion_policy.model.common.lr_scheduler import get_scheduler
-from diffusion_policy.model.diffusion.ema_model import EMAModel
 from einops import reduce
 from omegaconf import ListConfig, OmegaConf
 from torch.cuda.amp import GradScaler, autocast
 from torch.nn.parallel import DataParallel
 from torch.utils.data import DataLoader
 
+from diffusion_policy.common.checkpoint_util import TopKCheckpointManager
+from diffusion_policy.common.json_logger import JsonLogger
+from diffusion_policy.common.pytorch_util import dict_apply, optimizer_to
+from diffusion_policy.dataset.base_dataset import BaseImageDataset
+from diffusion_policy.model.common.lr_scheduler import get_scheduler
+from diffusion_policy.model.diffusion.ema_model import EMAModel
 from diffusion_policy.policy.diffusion_unet_hybrid_image_targeted_policy import (
     DiffusionUnetHybridImageTargetedPolicy,
 )
@@ -104,9 +102,7 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
             encoder_params = list(self.model.obs_encoder.parameters())
             encoder_param_ids = {id(p) for p in encoder_params}
 
-            other_params = [
-                p for p in self.model.parameters() if id(p) not in encoder_param_ids
-            ]
+            other_params = [p for p in self.model.parameters() if id(p) not in encoder_param_ids]
 
             # Create parameter groups with different learning rates
             param_groups = [
@@ -120,23 +116,16 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
             # Create optimizer with parameter groups
             import torch.optim as optim
 
-            optimizer_class = getattr(
-                optim, cfg.optimizer._target_.split(".")[-1]
-            )  # Extract class name
+            optimizer_class = getattr(optim, cfg.optimizer._target_.split(".")[-1])  # Extract class name
 
             optimizer_kwargs = dict(cfg.optimizer)
             optimizer_kwargs.pop("_target_")
             optimizer_kwargs.pop("lr")  # Remove base lr since we're setting per group
 
             self.optimizer = optimizer_class(param_groups, **optimizer_kwargs)
-            # else:
-            #     print("Variable LR requested but not MC3 model - using standard optimizer")
-            #     self.optimizer = hydra.utils.instantiate(
-            #         cfg.optimizer, params=self.model.parameters())
         else:
-            self.optimizer = hydra.utils.instantiate(
-                cfg.optimizer, params=self.model.parameters()
-            )
+            print("Variable LR requested but not MC3 model - using standard optimizer")
+            self.optimizer = hydra.utils.instantiate(cfg.optimizer, params=self.model.parameters())
 
         # configure training state
         self.global_step = 0
@@ -191,9 +180,7 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
             num_epochs = int(training_steps // single_epoch_steps)
             if training_steps % single_epoch_steps != 0:
                 num_epochs += 1
-            print(
-                f"Training for {num_epochs} epochs to achieve {training_steps} steps."
-            )
+            print(f"Training for {num_epochs} epochs to achieve {training_steps} steps.")
             cfg.training.num_epochs = num_epochs
 
         # configure lr scheduler
@@ -303,22 +290,17 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                 ) as tepoch:
                     for batch_idx, batch in enumerate(tepoch):
                         # device transfer
-                        batch = dict_apply(
-                            batch, lambda x: x.to(device, non_blocking=True)
-                        )
+                        batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
                         if self.new_type_dataloader:
                             # this is done to maintain validity for older code
+                            # reorder channels from HWC to CHW
                             for key in dataset.rgb_keys:
-                                batch["obs"][key] = (
-                                    torch.moveaxis(batch["obs"][key], -1, 2) / 255.0
-                                )
+                                batch["obs"][key] = torch.moveaxis(batch["obs"][key], -1, 2) / 255.0
                         batch_size = batch["action"].shape[0]
                         # print(f"Outside batch size: {batch_size}")
 
                         # construct noisy trajectory
-                        trajectory = self.model.normalizer["action"].normalize(
-                            batch["action"]
-                        )
+                        trajectory = self.model.normalizer["action"].normalize(batch["action"])
                         noise = torch.randn(trajectory.shape, device=trajectory.device)
                         # Sample a random timestep for each image
                         timesteps = torch.randint(
@@ -327,11 +309,9 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                             (batch_size,),
                             device=trajectory.device,
                         ).long()
-                        # Add noise to the clean images according to the noise magnitude at each timestep
+                        # Add noise to the clean images according to the noise magnitude at timestep
                         # (this is the forward diffusion process)
-                        noisy_trajectory = self.model.noise_scheduler.add_noise(
-                            trajectory, noise, timesteps
-                        )
+                        noisy_trajectory = self.model.noise_scheduler.add_noise(trajectory, noise, timesteps)
 
                         # Forward pass with optional mixed precision
                         if self.use_amp:
@@ -351,10 +331,7 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                             loss.backward()
 
                         # step optimizer
-                        if (
-                            self.global_step % cfg.training.gradient_accumulate_every
-                            == 0
-                        ):
+                        if self.global_step % cfg.training.gradient_accumulate_every == 0:
                             if self.use_amp:
                                 self.scaler.step(self.optimizer)
                                 self.scaler.update()
@@ -393,8 +370,7 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                     # End of batch
                 # End of epoch
 
-                # at the end of each epoch
-                # replace train_loss with epoch average
+                # At the end of each epoch, replace train_loss with epoch average
                 train_loss = np.mean(train_losses)
                 step_log["train_loss"] = train_loss
 
@@ -403,12 +379,6 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                 if cfg.training.use_ema:
                     policy = self.ema_model
                 policy.eval()
-
-                # run rollout
-                # if (self.epoch % cfg.training.rollout_every) == 0:
-                #     runner_log = env_runner.run(policy)
-                #     # log all
-                #     step_log.update(runner_log)
 
                 # run validation
                 if (self.epoch % cfg.training.val_every) == 0:
@@ -424,23 +394,19 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                                 mininterval=cfg.training.tqdm_interval_sec,
                             ) as tepoch:
                                 for batch_idx, batch in enumerate(tepoch):
-                                    batch = dict_apply(
-                                        batch, lambda x: x.to(device, non_blocking=True)
-                                    )
+                                    batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
                                     if self.new_type_dataloader:
                                         # this is done to maintain validity for older code
+                                        # reorder channels from HWC to CHW
                                         for key in dataset.rgb_keys:
-                                            batch["obs"][key] = (
-                                                torch.moveaxis(batch["obs"][key], -1, 2)
-                                                / 255.0
-                                            )
+                                            batch["obs"][key] = torch.moveaxis(batch["obs"][key], -1, 2) / 255.0
                                     if val_sampling_batches[dataset_idx] is None:
                                         val_sampling_batches[dataset_idx] = batch
                                     loss = self.model.compute_loss(batch)
                                     val_losses.append(loss)
-                                    if (
-                                        cfg.training.max_val_steps is not None
-                                    ) and batch_idx >= (cfg.training.max_val_steps - 1):
+                                    if (cfg.training.max_val_steps is not None) and batch_idx >= (
+                                        cfg.training.max_val_steps - 1
+                                    ):
                                         break
                             # End of validation loss computation loop
 
@@ -454,15 +420,11 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                         # Compute overall_val_loss
                         overall_val_loss = 0
                         for i in range(self.num_datasets):
-                            overall_val_loss += (
-                                self.sample_probabilities[i] * val_loss_per_dataset[i]
-                            )
+                            overall_val_loss += self.sample_probabilities[i] * val_loss_per_dataset[i]
                         step_log["val_loss"] = overall_val_loss
 
                 # run diffusion sampling on a _single_ validation batch from each dataset
-                if (
-                    self.epoch % cfg.training.sample_every
-                ) == 0 and cfg.training.log_val_mse:
+                if (self.epoch % cfg.training.sample_every) == 0 and cfg.training.log_val_mse:
                     with torch.no_grad():
                         val_ddpm_action_mses = []
                         val_ddim_action_mses = []
@@ -473,34 +435,22 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                                 val_sampling_batch,
                                 lambda x: x.to(device, non_blocking=True),
                             )
-                            val_obs_dict = {
-                                key: val_batch[key]
-                                for key in val_batch.keys()
-                                if key != "action"
-                            }
+                            val_obs_dict = {key: val_batch[key] for key in val_batch.keys() if key != "action"}
                             val_gt_action = val_sampling_batch["action"]
 
                             # Evaluate MSE when diffusing with DDPM
                             if cfg.training.eval_mse_DDPM:
-                                result = policy.predict_action(
-                                    val_obs_dict, use_DDIM=False
-                                )
+                                result = policy.predict_action(val_obs_dict, use_DDIM=False)
                                 pred_action = result["action_pred"]
-                                mse = torch.nn.functional.mse_loss(
-                                    pred_action, val_gt_action
-                                )
+                                mse = torch.nn.functional.mse_loss(pred_action, val_gt_action)
                                 step_log[f"val_ddpm_mse_{dataset_idx}"] = mse.item()
                                 val_ddpm_action_mses.append(mse.item())
 
                             # Evaluate MSE when diffusing with DDPM
                             if cfg.training.eval_mse_DDIM:
-                                result = policy.predict_action(
-                                    val_obs_dict, use_DDIM=True
-                                )
+                                result = policy.predict_action(val_obs_dict, use_DDIM=True)
                                 pred_action = result["action_pred"]
-                                mse = torch.nn.functional.mse_loss(
-                                    pred_action, val_gt_action
-                                )
+                                mse = torch.nn.functional.mse_loss(pred_action, val_gt_action)
                                 step_log[f"val_ddim_mse_{dataset_idx}"] = mse.item()
                                 val_ddim_action_mses.append(mse.item())
 
@@ -508,18 +458,12 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                         if cfg.training.eval_mse_DDPM:
                             val_ = 0
                             for i in range(self.num_datasets):
-                                val_ += (
-                                    self.sample_probabilities[i]
-                                    * val_ddpm_action_mses[i]
-                                )
+                                val_ += self.sample_probabilities[i] * val_ddpm_action_mses[i]
                             step_log["val_ddpm_mse"] = val_
                         if cfg.training.eval_mse_DDIM:
                             val_ = 0
                             for i in range(self.num_datasets):
-                                val_ += (
-                                    self.sample_probabilities[i]
-                                    * val_ddim_action_mses[i]
-                                )
+                                val_ += self.sample_probabilities[i] * val_ddim_action_mses[i]
                             step_log["val_ddim_mse"] = val_
 
                         del val_batch
@@ -549,9 +493,7 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                     topk_ckpt_paths = []
                     for i, topk_manager in enumerate(topk_managers):
                         protected_ckpts = self._get_protected_paths(i, topk_managers)
-                        ckpt_path = topk_manager.get_ckpt_path(
-                            metric_dict, protected_ckpts
-                        )
+                        ckpt_path = topk_manager.get_ckpt_path(metric_dict, protected_ckpts)
                         topk_ckpt_paths.append(ckpt_path)
 
                     for i, topk_ckpt_path in enumerate(topk_ckpt_paths):
@@ -585,9 +527,7 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
         loss = loss.mean()
         return loss
 
-    def _print_dataset_diagnostics(
-        self, cfg, dataset, train_dataloader, val_dataloaders
-    ):
+    def _print_dataset_diagnostics(self, cfg, dataset, train_dataloader, val_dataloaders):
         print()
         print("============= Dataset Diagnostics =============")
         print(f"Number of datasets: {self.num_datasets}")
@@ -601,20 +541,12 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
             val_dataset = dataset.get_validation_dataset(i)
             print(f"Dataset {i}: {dataset.zarr_paths[i]}")
             print("------------------------------------------------")
-            print(
-                f"Number of training demonstrations: {np.sum(dataset.train_masks[i])}"
-            )
-            print(
-                f"Number of validation demonstrations: {np.sum(dataset.val_masks[i])}"
-            )
+            print(f"Number of training demonstrations: {np.sum(dataset.train_masks[i])}")
+            print(f"Number of validation demonstrations: {np.sum(dataset.val_masks[i])}")
             print(f"Number of training samples: {len(dataset.samplers[i])}")
             print(f"Number of validation samples: {len(val_dataset)}")
-            print(
-                f"Approx. number of training batches: {len(dataset.samplers[i]) // cfg.dataloader.batch_size}"
-            )
-            print(
-                f"Approx. number of validation batches: {len(val_dataset) // cfg.val_dataloader.batch_size}"
-            )
+            print(f"Approx. number of training batches: {len(dataset.samplers[i]) // cfg.dataloader.batch_size}")
+            print(f"Approx. number of validation batches: {len(val_dataset) // cfg.val_dataloader.batch_size}")
             print(f"Sample probability: {self.sample_probabilities[i]}")
             print()
         print("================================================")

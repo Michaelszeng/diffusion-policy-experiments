@@ -11,11 +11,7 @@ from torchvision import transforms
 from diffusion_policy.common.normalize_util import get_image_range_normalizer
 from diffusion_policy.common.pytorch_util import dict_apply
 from diffusion_policy.common.replay_buffer import ReplayBuffer
-from diffusion_policy.common.sampler import (
-    ImprovedDatasetSampler,
-    downsample_mask,
-    get_val_mask,
-)
+from diffusion_policy.common.sampler import SequenceSampler, downsample_mask, get_val_mask
 from diffusion_policy.dataset.base_dataset import BaseImageDataset
 from diffusion_policy.model.common.normalizer import LinearNormalizer
 
@@ -38,9 +34,9 @@ def low_pass_filter(x, kernel):
     return F.conv2d(x, kernel, padding=padding, groups=x.shape[1])
 
 
-class BinaryTaskDataset(BaseImageDataset):
+class PlanarPushingDataset(BaseImageDataset):
     """
-    Dataset for binary tasks that supports:
+    Dataset for planar pushing that supports:
     - hybrid observations (images + end effector state)
     - multi cameras
     - cotraining with multiple datasets (datasets must share input output space)
@@ -96,14 +92,14 @@ class BinaryTaskDataset(BaseImageDataset):
         self.train_masks = []
         self.val_masks = []
         self.samplers = []
-        # self.sample_probabilities = np.zeros(len(zarr_configs))
+        self.sample_probabilities = np.zeros(len(zarr_configs))
         self.zarr_paths = []
 
         for i, zarr_config in enumerate(zarr_configs):
             # Extract config info
             zarr_path = zarr_config["path"]
             max_train_episodes = zarr_config.get("max_train_episodes", None)
-            # sampling_weight = zarr_config.get('sampling_weight', None)
+            sampling_weight = zarr_config.get("sampling_weight", None)
 
             # Set up replay buffer
             self.replay_buffers.append(
@@ -126,21 +122,10 @@ class BinaryTaskDataset(BaseImageDataset):
             self.val_masks.append(val_mask)
 
             # Set up sampler
-            # self.samplers.append(
-            #     SequenceSampler(
-            #         replay_buffer=self.replay_buffers[-1],
-            #         sequence_length=horizon,
-            #         pad_before=pad_before,
-            #         pad_after=pad_after,
-            #         episode_mask=train_mask,
-            #         key_first_k=key_first_k
-            #     )
-            # )
             self.samplers.append(
-                ImprovedDatasetSampler(
+                SequenceSampler(
                     replay_buffer=self.replay_buffers[-1],
                     sequence_length=horizon,
-                    shape_meta=shape_meta,
                     pad_before=pad_before,
                     pad_after=pad_after,
                     episode_mask=train_mask,
@@ -149,13 +134,13 @@ class BinaryTaskDataset(BaseImageDataset):
             )
 
             # Set up sample probabilities and zarr paths
-            # if sampling_weight is not None:
-            # self.sample_probabilities[i] = sampling_weight
-            # else:
-            # self.sample_probabilities[i] = np.sum(train_mask)
+            if sampling_weight is not None:
+                self.sample_probabilities[i] = sampling_weight
+            else:
+                self.sample_probabilities[i] = np.sum(train_mask)
             self.zarr_paths.append(zarr_path)
         # Normalize sample_probabilities
-        # self.sample_probabilities = self._normalize_sample_probabilities(self.sample_probabilities)
+        self.sample_probabilities = self._normalize_sample_probabilities(self.sample_probabilities)
 
         # Set up color jitter
         self.color_jitter = color_jitter
@@ -176,8 +161,6 @@ class BinaryTaskDataset(BaseImageDataset):
         self.use_one_hot_encoding = use_one_hot_encoding
         self.one_hot_encoding = None  # if val dataset, this will not be None
 
-        assert len(self.samplers) == 2, "BinaryTaskDataset only supports 2 datasets"
-
     def get_validation_dataset(self, index=None):
         # Create validation dataset
         val_set = copy.copy(self)
@@ -191,29 +174,22 @@ class BinaryTaskDataset(BaseImageDataset):
             val_set.val_masks = [self.val_masks[index]]
             val_set.zarr_paths = [self.zarr_paths[index]]
         val_set.num_datasets = 1
-        # val_set.sample_probabilities = np.array([1.0])
+        val_set.sample_probabilities = np.array([1.0])
 
         # Set one hot encoding
         val_set.one_hot_encoding = np.zeros(self.num_datasets).astype(np.float32)
         val_set.one_hot_encoding[index] = 1
 
-        # val_set.samplers = [SequenceSampler(
-        #     replay_buffer=self.replay_buffers[index],
-        #     sequence_length=self.horizon,
-        #     pad_before=self.pad_before,
-        #     pad_after=self.pad_after,
-        #     episode_mask=self.val_masks[index]
-        # )]
         val_set.samplers = [
-            ImprovedDatasetSampler(
+            SequenceSampler(
                 replay_buffer=self.replay_buffers[index],
                 sequence_length=self.horizon,
-                shape_meta=self.shape_meta,
                 pad_before=self.pad_before,
                 pad_after=self.pad_after,
                 episode_mask=self.val_masks[index],
             )
         ]
+
         return val_set
 
     def get_normalizer(self, mode="limits", **kwargs):
@@ -250,7 +226,7 @@ class BinaryTaskDataset(BaseImageDataset):
         return normalizer
 
     def get_sample_probabilities(self):
-        return [len(self.samplers[0]) / len(self), len(self.samplers[1]) / len(self)]
+        return self.sample_probabilities
 
     def get_num_datasets(self):
         return self.num_datasets
@@ -295,13 +271,11 @@ class BinaryTaskDataset(BaseImageDataset):
                 data["obs"][key] = np.moveaxis(sample[key], -1, 1) / 255.0
                 if self.low_pass_on_wrist and key == "wrist_camera":
                     data["obs"][key] = low_pass_filter(
-                        torch.from_numpy(data["obs"][key]),
-                        self.wrist_kernel.to(dtype=torch.float64),
+                        torch.from_numpy(data["obs"][key]), self.wrist_kernel.to(dtype=torch.float64)
                     ).numpy()
                 if self.low_pass_on_overhead and key == "overhead_camera":
                     data["obs"][key] = low_pass_filter(
-                        torch.from_numpy(data["obs"][key]),
-                        self.overhead_kernel.to(dtype=torch.float64),
+                        torch.from_numpy(data["obs"][key]), self.overhead_kernel.to(dtype=torch.float64)
                     ).numpy()
                 del sample[key]
         else:
@@ -345,10 +319,10 @@ class BinaryTaskDataset(BaseImageDataset):
         if num_null_sampling_weights not in [0, N]:
             raise ValueError("Either all or none of the zarr_configs must have a sampling_weight")
 
-    # def _normalize_sample_probabilities(self, sample_probabilities):
-    #     total = np.sum(sample_probabilities)
-    #     assert total > 0, "Sum of sampling weights must be greater than 0"
-    #     return sample_probabilities / total
+    def _normalize_sample_probabilities(self, sample_probabilities):
+        total = np.sum(sample_probabilities)
+        assert total > 0, "Sum of sampling weights must be greater than 0"
+        return sample_probabilities / total
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         # To sample a sequence, first sample a dataset,
@@ -360,20 +334,14 @@ class BinaryTaskDataset(BaseImageDataset):
         if self.num_datasets == 1:
             sampler_idx = 0
             sampler = self.samplers[sampler_idx]
-            data = sampler.sample_data(idx)
+            sample = sampler.sample_sequence(idx)
         else:
-            # sampler_idx = np.random.choice(self.num_datasets, p=self.sample_probabilities)
-            if idx < len(self.samplers[0]):
-                data = self.samplers[0].sample_data(idx)
-                sampler_idx = 0
-            else:
-                data = self.samplers[1].sample_data(idx % len(self.samplers[0]))
-                sampler_idx = 1
-            # sampler = self.samplers[sampler_idx]
-            # sample = sampler.sample_sequence(idx % len(sampler))
+            sampler_idx = np.random.choice(self.num_datasets, p=self.sample_probabilities)
+            sampler = self.samplers[sampler_idx]
+            sample = sampler.sample_sequence(idx % len(sampler))
 
         # Process sample
-        # data = self._sample_to_data(sample, sampler_idx)
+        data = self._sample_to_data(sample, sampler_idx)
         torch_data = dict_apply(data, torch.from_numpy)
         return torch_data
 
@@ -406,7 +374,7 @@ if __name__ == "__main__":
         "hue": 0.15,
     }
 
-    dataset = BinaryTaskDataset(
+    dataset = PlanarPushingDataset(
         zarr_configs=zarr_configs,
         shape_meta=shape_meta,
         horizon=8,
@@ -452,10 +420,7 @@ if __name__ == "__main__":
                 image_array = attr[i].detach().numpy().transpose(1, 2, 0)
 
                 # Convert the RGB array to BGR
-                image_array[:, :, 0], image_array[:, :, 2] = (
-                    image_array[:, :, 2],
-                    image_array[:, :, 0].copy(),
-                )
+                image_array[:, :, 0], image_array[:, :, 2] = image_array[:, :, 2], image_array[:, :, 0].copy()
                 # image_array = cv2.cvtColor(image_array, cv2.COLOR_RGB2BGR)
 
                 # Display the image using OpenCV
