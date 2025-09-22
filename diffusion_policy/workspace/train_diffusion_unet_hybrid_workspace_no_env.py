@@ -16,10 +16,8 @@ import dill
 import hydra
 import numpy as np
 import torch
-import torch.nn.functional as F
 import tqdm
 import wandb
-from einops import reduce
 from omegaconf import ListConfig, OmegaConf
 from torch.cuda.amp import GradScaler, autocast
 from torch.nn.parallel import DataParallel
@@ -290,32 +288,22 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                         # reorder channels from HWC to CHW to match robomimic's vision encoder
                         for key in dataset.rgb_keys:
                             batch["obs"][key] = torch.moveaxis(batch["obs"][key], -1, 2) / 255.0
-                        batch_size = batch["action"].shape[0]
+                        # batch_size = batch["action"].shape[0]
                         # print(f"Outside batch size: {batch_size}")
 
                         # construct noisy trajectory
                         trajectory = self.model.normalizer["action"].normalize(batch["action"])
-                        noise = torch.randn(trajectory.shape, device=trajectory.device)
-                        # Sample a random timestep for each image
-                        timesteps = torch.randint(
-                            0,
-                            self.model.noise_scheduler.config.num_train_timesteps,
-                            (batch_size,),
-                            device=trajectory.device,
-                        ).long()
-                        # Add noise to the clean images according to the noise magnitude at timestep
-                        # (this is the forward diffusion process)
-                        noisy_trajectory = self.model.noise_scheduler.add_noise(trajectory, noise, timesteps)
+                        noisy_trajectory, timesteps, noise = self.model.noise_trajectory(trajectory)
 
                         # Forward pass with optional mixed precision
                         if self.use_amp:
                             with autocast(dtype=torch.float16):
                                 pred = self.model(batch, noisy_trajectory, timesteps)
-                                raw_loss = self.compute_loss(trajectory, noise, pred)
+                                raw_loss = self.model.compute_loss(trajectory, noise, pred)
                                 loss = raw_loss / cfg.training.gradient_accumulate_every
                         else:
                             pred = self.model(batch, noisy_trajectory, timesteps)
-                            raw_loss = self.compute_loss(trajectory, noise, pred)
+                            raw_loss = self.model.compute_loss(trajectory, noise, pred)
                             loss = raw_loss / cfg.training.gradient_accumulate_every
 
                         # Backward pass with optional mixed precision
@@ -394,8 +382,20 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                                         batch["obs"][key] = torch.moveaxis(batch["obs"][key], -1, 2) / 255.0
                                     if val_sampling_batches[dataset_idx] is None:
                                         val_sampling_batches[dataset_idx] = batch
-                                    loss = self.model.compute_loss(batch)
+
+                                    # construct normalized noisy trajectory for inference
+                                    trajectory = self.model.normalizer["action"].normalize(batch["action"])
+                                    noisy_trajectory, timesteps, noise = self.model.noise_trajectory(trajectory)
+
+                                    # generate inpainting mask
+                                    condition_mask = self.model.mask_generator(trajectory.shape)
+                                    loss_mask = ~condition_mask
+
+                                    # forward pass and compute loss
+                                    pred = self.model(batch, noisy_trajectory, timesteps, condition_mask)
+                                    loss = self.model.compute_loss(trajectory, noise, pred, loss_mask)
                                     val_losses.append(loss)
+
                                     if (cfg.training.max_val_steps is not None) and batch_idx >= (
                                         cfg.training.max_val_steps - 1
                                     ):
@@ -504,20 +504,6 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                 json_logger.log(step_log)
                 self.global_step += 1
                 self.epoch += 1
-
-    def compute_loss(self, trajectory, noise, pred):
-        pred_type = self.model.noise_scheduler.config.prediction_type
-        if pred_type == "epsilon":
-            target = noise
-        elif pred_type == "sample":
-            target = trajectory
-        else:
-            raise ValueError(f"Unsupported prediction type {pred_type}")
-
-        loss = F.mse_loss(pred, target, reduction="none")
-        loss = reduce(loss, "b ... -> b (...)", "mean")
-        loss = loss.mean()
-        return loss
 
     def _print_dataset_diagnostics(self, cfg, dataset, train_dataloader, val_dataloaders):
         print()

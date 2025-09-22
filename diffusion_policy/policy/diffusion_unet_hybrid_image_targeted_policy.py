@@ -30,12 +30,11 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
     def __init__(
         self,
         shape_meta: dict,
-        noise_scheduler: DDPMScheduler,
+        DDPM_noise_scheduler: DDPMScheduler,
         horizon,
         n_action_steps,
         n_obs_steps,
         one_hot_encoding_dim=0,
-        num_inference_steps=None,
         use_target_cond=False,
         target_dim=None,
         crop_shape=(76, 76),
@@ -47,6 +46,7 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         obs_embedding_dim=None,
         obs_encoder_group_norm=False,
         eval_fixed_crop=False,
+        num_DDPM_inference_steps=100,
         num_DDIM_inference_steps=10,
         pretrained_encoder=False,
         freeze_pretrained_encoder=False,
@@ -181,32 +181,26 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
             cond_predict_scale=cond_predict_scale,
         )
 
-        self.obs_encoder = obs_encoder
         if not inference_loading:
             if initialize_obs_encoder is not None:
                 print(f"Loading obs encoder from {initialize_obs_encoder}")
                 state_dict = torch.load(initialize_obs_encoder, map_location="cpu")
-                self.obs_encoder.load_state_dict(state_dict, strict=True)
+                obs_encoder.load_state_dict(state_dict, strict=True)
 
                 if freeze_self_trained_obs_encoder:
                     for param in self.obs_encoder.parameters():
                         param.requires_grad = False
 
-        self.model = model
-        self.noise_scheduler = noise_scheduler
-
-        # Create DDIM sampler
+        # Create a DDIM sampler that mirrors the DDPM β-schedule
         DDIM_noise_scheduler = DDIMScheduler(
-            num_train_timesteps=self.noise_scheduler.num_train_timesteps,
-            beta_start=self.noise_scheduler.beta_start,
-            beta_end=self.noise_scheduler.beta_end,
-            beta_schedule=self.noise_scheduler.beta_schedule,
-            clip_sample=self.noise_scheduler.clip_sample,
-            prediction_type=self.noise_scheduler.prediction_type,
+            num_train_timesteps=DDPM_noise_scheduler.num_train_timesteps,
+            beta_start=DDPM_noise_scheduler.beta_start,
+            beta_end=DDPM_noise_scheduler.beta_end,
+            beta_schedule=DDPM_noise_scheduler.beta_schedule,
+            clip_sample=DDPM_noise_scheduler.clip_sample,
+            prediction_type=DDPM_noise_scheduler.prediction_type,
         )
         DDIM_noise_scheduler.set_timesteps(num_DDIM_inference_steps)
-        self.DDIM_noise_scheduler = DDIM_noise_scheduler
-        self.num_DDIM_inference_steps = num_DDIM_inference_steps
 
         self.mask_generator = LowdimMaskGenerator(
             action_dim=action_dim,
@@ -215,6 +209,12 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
             fix_obs_steps=True,
             action_visible=past_action_visible,
         )
+        self.obs_encoder = obs_encoder
+        self.model = model
+        self.DDPM_noise_scheduler = DDPM_noise_scheduler
+        self.DDIM_noise_scheduler = DDIM_noise_scheduler
+        self.num_DDPM_inference_steps = num_DDPM_inference_steps
+        self.num_DDIM_inference_steps = num_DDIM_inference_steps
         self.normalizer = LinearNormalizer()  # Empty normalizer; parameters will be set later
         self.horizon = horizon
         self.obs_feature_dim = obs_feature_dim
@@ -225,10 +225,6 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         self.one_hot_encoding_dim = one_hot_encoding_dim
         self.use_target_cond = use_target_cond
         self.kwargs = kwargs
-
-        if num_inference_steps is None:
-            num_inference_steps = noise_scheduler.config.num_train_timesteps
-        self.num_inference_steps = num_inference_steps
 
         print("Diffusion params: %e" % sum(p.numel() for p in self.model.parameters()))
         print("Vision params: %e" % sum(p.numel() for p in self.obs_encoder.parameters()))
@@ -279,8 +275,8 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
             scheduler = self.DDIM_noise_scheduler
             scheduler.set_timesteps(self.num_DDIM_inference_steps)
         else:
-            scheduler = self.noise_scheduler
-            scheduler.set_timesteps(self.num_inference_steps)
+            scheduler = self.DDPM_noise_scheduler
+            scheduler.set_timesteps(self.num_DDPM_inference_steps)
 
         trajectory = torch.randn(
             size=condition_data.shape,
@@ -411,27 +407,6 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         result = {"action": action, "action_pred": action_pred}
         return result
 
-    def compute_obs_embedding(self, batch):
-        assert "valid_mask" not in batch
-        nobs = self.normalizer.normalize(batch["obs"])
-        key = next(iter(nobs.keys()))
-        batch_size = nobs[key].shape[0]
-
-        # reshape B, T, ... to B*T
-        this_nobs = dict_apply(nobs, lambda x: x[:, : self.n_obs_steps, ...].reshape(-1, *x.shape[2:]))
-        nobs_features = self.obs_encoder(this_nobs)
-        if self.project_obs_embedding:
-            nobs_features = self.obs_embedding_projector(nobs_features)
-        # reshape back to B, Do
-        global_cond = nobs_features.reshape(batch_size, -1)
-
-        # append one hot encoding
-        if self.one_hot_encoding_dim > 0:
-            one_hot_encoding = batch["one_hot_encoding"]
-            global_cond = torch.cat([global_cond, one_hot_encoding], dim=-1)
-
-        return global_cond
-
     ####################################################################################################################
     ### Training
     ####################################################################################################################
@@ -439,17 +414,38 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         """Set normalizer's parameters based on dataset."""
         self.normalizer.load_state_dict(normalizer.state_dict())
 
-    def get_encoder_output(self, batch):
+    def noise_trajectory(self, trajectory):
+        """Add random amount of noise to the clean images"""
+        noise = torch.randn(trajectory.shape, device=trajectory.device)
+        batch_size = trajectory.shape[0]
+        timesteps = torch.randint(
+            low=0,
+            high=self.DDPM_noise_scheduler.config.num_train_timesteps,
+            size=(batch_size,),
+            device=trajectory.device,
+        ).long()
+        noisy_trajectory = self.DDPM_noise_scheduler.add_noise(trajectory, noise, timesteps)
+        return noisy_trajectory, timesteps, noise
+
+    def forward(self, batch, noisy_trajectory, timesteps, condition_mask=None):
+        """
+        Build input vectors (noisy trajectory, global conditioning vector, target conditioning vector) and run them
+        through the model to get a prediction (of either the noise vector or the denoised trajectory depending on the
+        prediction type config).
+        """
         assert "valid_mask" not in batch
+        # Collect normalized observations/actions/targets
         nobs = self.normalizer.normalize(batch["obs"])
+        nactions = self.normalizer["action"].normalize(batch["action"])
         ntarget = None
         if self.use_target_cond:
             ntarget = self.normalizer["target"].normalize(batch["target"])
-        nactions = self.normalizer["action"].normalize(batch["action"])
+
+        # Sizing convenience
         batch_size = nactions.shape[0]
         horizon = nactions.shape[1]
 
-        # handle different ways of passing observation
+        # encode observations into global conditioning vector
         global_cond = None
         # reshape B, T, ... to B*T
         this_nobs = dict_apply(nobs, lambda x: x[:, : self.n_obs_steps, ...].reshape(-1, *x.shape[2:]))
@@ -457,39 +453,20 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         if self.project_obs_embedding:
             nobs_features = self.obs_embedding_projector(nobs_features)
         # reshape back to B, Do
-        global_cond = nobs_features.reshape(batch_size, -1)
+        global_cond = nobs_features.reshape(batch_size, -1)  # B, Do
 
-        return global_cond, nobs_features
-
-    def forward(self, batch, noisy_trajectory, timesteps):
-        assert "valid_mask" not in batch
-        nobs = self.normalizer.normalize(batch["obs"])
-        nactions = self.normalizer["action"].normalize(batch["action"])
-        ntarget = None
-        if self.use_target_cond:
-            ntarget = self.normalizer["target"].normalize(batch["target"])
-        batch_size = nactions.shape[0]
-        horizon = nactions.shape[1]
-
-        # handle different ways of passing observation
-        global_cond = None
-        # reshape B, T, ... to B*T
-        this_nobs = dict_apply(nobs, lambda x: x[:, : self.n_obs_steps, ...].reshape(-1, *x.shape[2:]))
-        nobs_features = self.obs_encoder(this_nobs)
-        if self.project_obs_embedding:
-            nobs_features = self.obs_embedding_projector(nobs_features)
-        # reshape back to B, Do
-        global_cond = nobs_features.reshape(batch_size, -1)
-
-        # append one hot encoding
+        # append one hot encoding to global conditioning vector
         if self.one_hot_encoding_dim > 0:
             one_hot_encoding = batch["one_hot_encoding"]
             global_cond = torch.cat([global_cond, one_hot_encoding], dim=-1)
 
-        # handle target conditioning
+        # build target conditioning vector
         target_cond = None
         if self.use_target_cond:
             target_cond = ntarget.reshape(batch_size, -1)  # B, D_t
+
+        if condition_mask is not None:
+            noisy_trajectory[condition_mask] = nactions[condition_mask]
 
         # Predict the noise residual
         return self.model(
@@ -499,72 +476,13 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
             target_cond=target_cond,
         )
 
-    # Completely redundant w/ forward method combined with TrainDiffusionUnetHybridWorkspaceNoEnv.compute_loss().
-    def compute_loss(self, batch):
-        # normalize input
-        assert "valid_mask" not in batch
-        nobs = self.normalizer.normalize(batch["obs"])
-        nactions = self.normalizer["action"].normalize(batch["action"])
-        ntarget = None
-        if self.use_target_cond:
-            ntarget = self.normalizer["target"].normalize(batch["target"])
-        batch_size = nactions.shape[0]
-        horizon = nactions.shape[1]
-
-        # handle different ways of passing observation
-        global_cond = None
-        trajectory = nactions
-        cond_data = trajectory
-        # reshape B, T, ... to B*T
-        this_nobs = dict_apply(nobs, lambda x: x[:, : self.n_obs_steps, ...].reshape(-1, *x.shape[2:]))
-        nobs_features = self.obs_encoder(this_nobs)
-        if self.project_obs_embedding:
-            nobs_features = self.obs_embedding_projector(nobs_features)
-        # reshape back to B, Do
-        global_cond = nobs_features.reshape(batch_size, -1)
-
-        # append one hot encoding
-        if self.one_hot_encoding_dim > 0:
-            one_hot_encoding = batch["one_hot_encoding"]
-            global_cond = torch.cat([global_cond, one_hot_encoding], dim=-1)
-
-        # handle target conditioning
-        target_cond = None
-        if self.use_target_cond:
-            target_cond = ntarget.reshape(batch_size, -1)  # B, D_t
-
-        # generate impainting mask
-        condition_mask = self.mask_generator(trajectory.shape)
-
-        # Sample noise that we'll add to the images
-        noise = torch.randn(trajectory.shape, device=trajectory.device)
-        bsz = trajectory.shape[0]
-        # Sample a random timestep for each image
-        timesteps = torch.randint(
-            0,
-            self.noise_scheduler.config.num_train_timesteps,
-            (bsz,),
-            device=trajectory.device,
-        ).long()
-        # Add noise to the clean images according to the noise magnitude at each timestep
-        # (this is the forward diffusion process)
-        noisy_trajectory = self.noise_scheduler.add_noise(trajectory, noise, timesteps)
-
-        # compute loss mask
-        loss_mask = ~condition_mask
-
-        # apply conditioning
-        noisy_trajectory[condition_mask] = cond_data[condition_mask]
-
-        # Predict the noise residual
-        pred = self.model(
-            noisy_trajectory,
-            timesteps,
-            global_cond=global_cond,
-            target_cond=target_cond,
-        )
-
-        pred_type = self.noise_scheduler.config.prediction_type
+    def compute_loss(self, trajectory, noise, pred, loss_mask=None):
+        """
+        Optional loss mask used during validation so that we only compute loss on the timesteps corresponding to future
+        actions.
+        """
+        # Check whether we are trying to predict the noise added to the trajectory or the trajectory itself
+        pred_type = self.DDPM_noise_scheduler.config.prediction_type
         if pred_type == "epsilon":
             target = noise
         elif pred_type == "sample":
@@ -573,7 +491,7 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
             raise ValueError(f"Unsupported prediction type {pred_type}")
 
         loss = F.mse_loss(pred, target, reduction="none")
-        loss = loss * loss_mask.type(loss.dtype)
+        loss = loss * loss_mask.type(loss.dtype) if loss_mask is not None else loss
         loss = reduce(loss, "b ... -> b (...)", "mean")
         loss = loss.mean()
         return loss

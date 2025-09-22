@@ -69,3 +69,28 @@ LLsub ./submit_training.sh -s 20 -g volta:1
 ```
 
 Remember to also obtain and `desktop_to_supercloud.sh` (if running on Supercloud) the dataset files.
+
+
+## Important Configurations
+
+Probably the most important configurations are `horizon`, `n_obs_steps`, and `past_action_visible`.
+
+`n_obs_steps` overlaps with `horizon` in this sense:
+```
+time axis :  0 1 | 2 3 4 … 15
+             ^^^^^ n_obs_steps = 2
+             ^^^^^^^^^^^^^^^ horizon T = 16
+```
+
+The trajectory occurs over the entire horizon and therefore may have past actions included as well:
+```
+t = 0,1     … To-1        (past two actions)      ← have already happened
+t = 2 … 15                  (future actions)      ← should be predicted
+```
+
+The network will learn to re-predict those already-executed actions.
+
+If `past_actions_visible` is true, then the first `n_obs_steps - 1` ground-truth (unnoised) steps will be passed to the model effectively as conditioning, and loss will be compared only against the `horizon - (n_obs_steps - 1)` predicted actions. (Note that we subtract `1` from `n_obs_steps` because actions happen after observations; i.e. if we have 2 observations, then we have already executed the action for the first observation, and need to predict the action for corresponding to the second observation).
+
+
+Note that this implementation uses global observation conditioning (i.e. observations are not part of per-timestep token, if transformer variant is used).

@@ -88,7 +88,7 @@ policy:  # Parameters to be passed to policy (i.e. the _target_ policy class bel
   n_action_steps: 8
   n_obs_steps: 2
   past_action_visible: false  # explicitely condition on past actions
-  noise_scheduler:
+  DDPM_noise_scheduler:
     _target_: diffusers.schedulers.scheduling_ddpm.DDPMScheduler
     beta_end: 0.02
     beta_schedule: squaredcos_cap_v2
@@ -97,7 +97,8 @@ policy:  # Parameters to be passed to policy (i.e. the _target_ policy class bel
     num_train_timesteps: 100
     prediction_type: epsilon
     variance_type: fixed_small
-  num_inference_steps: 100
+  num_DDPM_inference_steps: 100  # DDPM scheduler is used during training/validation
+  num_DDIM_inference_steps: 10  # DDIM scheduler is used during inference
   obs_encoder_group_norm: true
   use_target_cond: true
   target_dim: 3  # 3 dims for 2D pose of T
@@ -133,7 +134,7 @@ training:
   max_train_steps: null
   max_val_steps: null
   num_epochs: 200 # 70 for 50, 2000; 200 for 50, 500
-  resume: true
+  resume: false
   rollout_every: 5  # UNUSED -- no environment rollouts during training
   sample_every: ${training.checkpoint_every}  # validation using DDPM output
   seed: 42
