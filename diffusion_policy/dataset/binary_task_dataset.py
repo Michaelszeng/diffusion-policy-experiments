@@ -182,7 +182,7 @@ class BinaryTaskDataset(BaseImageDataset):
         # Create validation dataset
         val_set = copy.copy(self)
 
-        if index == None:
+        if index is None:
             assert self.num_datasets == 1, "Must specify validation dataset index if multiple datasets"
             index = 0
         else:
@@ -256,7 +256,7 @@ class BinaryTaskDataset(BaseImageDataset):
         return self.num_datasets
 
     def get_num_episodes(self, index=None):
-        if index == None:
+        if index is None:
             num_episodes = 0
             for i in range(self.num_datasets):
                 num_episodes += self.replay_buffers[i].n_episodes

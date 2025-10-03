@@ -39,6 +39,50 @@ class BaseWorkspace:
         include_keys=None,
         use_thread=True,
     ):
+        """
+        Checkpoint format:
+
+        The checkpoint saved to disk is a single dictionary ("payload") with
+        the following top-level keys:
+
+        - "cfg": The Hydra/OmegaConf configuration object used to construct
+          this workspace (type: OmegaConf). This enables reconstructing the
+          workspace via `create_from_checkpoint`.
+
+        - "state_dicts": A mapping from attribute name (str) on this workspace
+          instance to a state_dict object. Any attribute that has both
+          `state_dict()` and `load_state_dict()` methods (e.g., torch.nn.Module,
+          torch.optim.Optimizer, schedulers, samplers) is included here unless
+          its name is listed in `exclude_keys`.
+            - key: attribute name on `self` (str)
+            - value: result of `attr.state_dict()` (potentially moved to CPU if
+              `use_thread=True` to avoid holding GPU tensors while saving)
+
+        - "pickles": A mapping from attribute name (str) to a raw `dill` bytes
+          blob for objects that do not expose state_dict/load_state_dict but are
+          explicitly requested to be saved. By default this includes any names
+          listed in `self.include_keys` and also "_output_dir". You can further
+          control this with the `include_keys` argument when calling
+          `save_checkpoint`.
+            - key: attribute name on `self` (str)
+            - value: `dill.dumps(attr)` (bytes)
+
+        Selection rules
+        - Excluded: Any attribute name present in `exclude_keys` is skipped even
+          if it has a state_dict.
+        - Included as pickle: Any attribute name present in `include_keys`
+          (plus "_output_dir" by default) is serialized into the "pickles" map
+          using `dill`.
+
+        Loading
+        - `load_payload` restores entries by calling `load_state_dict` for all
+          entries in "state_dicts" (except those excluded at load time) and by
+          `dill.loads`-ing the entries in "pickles" for the requested keys.
+        - `create_from_checkpoint` constructs a new workspace from `payload["cfg"]`
+          and then delegates to `load_payload`.
+
+        Returns absolute filesystem path to the saved checkpoint file.
+        """
         if path is None:
             path = pathlib.Path(self.output_dir).joinpath("checkpoints", f"{tag}.ckpt")
         else:
@@ -86,9 +130,7 @@ class BaseWorkspace:
             if key in payload["pickles"]:
                 self.__dict__[key] = dill.loads(payload["pickles"][key])
 
-    def load_checkpoint(
-        self, path=None, tag="latest", exclude_keys=None, include_keys=None, **kwargs
-    ):
+    def load_checkpoint(self, path=None, tag="latest", exclude_keys=None, include_keys=None, **kwargs):
         if path is None:
             path = self.get_checkpoint_path(tag=tag)
         else:
@@ -98,9 +140,10 @@ class BaseWorkspace:
         return payload
 
     @classmethod
-    def create_from_checkpoint(
-        cls, path, exclude_keys=None, include_keys=None, **kwargs
-    ):
+    def create_from_checkpoint(cls, path, exclude_keys=None, include_keys=None, **kwargs):
+        """
+        Create a workspace from a checkpoint.
+        """
         payload = torch.load(open(path, "rb"), pickle_module=dill)
         instance = cls(payload["cfg"])
         instance.load_payload(

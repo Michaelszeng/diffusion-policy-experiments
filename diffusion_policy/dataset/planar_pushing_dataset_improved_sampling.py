@@ -122,16 +122,6 @@ class PlanarPushingDataset(BaseImageDataset):
             self.val_masks.append(val_mask)
 
             # Set up sampler
-            # self.samplers.append(
-            #     SequenceSampler(
-            #         replay_buffer=self.replay_buffers[-1],
-            #         sequence_length=horizon,
-            #         pad_before=pad_before,
-            #         pad_after=pad_after,
-            #         episode_mask=train_mask,
-            #         key_first_k=key_first_k
-            #     )
-            # )
             self.samplers.append(
                 ImprovedDatasetSampler(
                     replay_buffer=self.replay_buffers[-1],
@@ -176,7 +166,7 @@ class PlanarPushingDataset(BaseImageDataset):
         # Create validation dataset
         val_set = copy.copy(self)
 
-        if index == None:
+        if index is None:
             assert self.num_datasets == 1, "Must specify validation dataset index if multiple datasets"
             index = 0
         else:
@@ -191,13 +181,6 @@ class PlanarPushingDataset(BaseImageDataset):
         val_set.one_hot_encoding = np.zeros(self.num_datasets).astype(np.float32)
         val_set.one_hot_encoding[index] = 1
 
-        # val_set.samplers = [SequenceSampler(
-        #     replay_buffer=self.replay_buffers[index],
-        #     sequence_length=self.horizon,
-        #     pad_before=self.pad_before,
-        #     pad_after=self.pad_after,
-        #     episode_mask=self.val_masks[index]
-        # )]
         val_set.samplers = [
             ImprovedDatasetSampler(
                 replay_buffer=self.replay_buffers[index],
@@ -251,7 +234,7 @@ class PlanarPushingDataset(BaseImageDataset):
         return self.num_datasets
 
     def get_num_episodes(self, index=None):
-        if index == None:
+        if index is None:
             num_episodes = 0
             for i in range(self.num_datasets):
                 num_episodes += self.replay_buffers[i].n_episodes
@@ -386,7 +369,8 @@ if __name__ == "__main__":
         # },
         {
             # 'path': 'data/planar_pushing_cotrain/visual_mean_shift/visual_mean_shift_level_2.zarr',
-            "path": "data/planar_pushing_cotrain/sim_sim_tee_data_carbon_large.zarr",
+            # "path": "data/planar_pushing_cotrain/sim_sim_tee_data_carbon_large.zarr",
+            "path": "data/diffusion_experiments/planar_pushing/sim_sim_tee_data_carbon_large.zarr",
             "max_train_episodes": None,
             "sampling_weight": 1.0,
         }
@@ -413,14 +397,31 @@ if __name__ == "__main__":
     )
 
     dataset.__getitem__(0)
+    print("=" * 60)
+    print("DATASET SIZE INFORMATION")
+    print("=" * 60)
     print("Initialized dataset")
-    print("Total episodes (train + val):", dataset.get_num_episodes())
-    print("Training dataset length:", len(dataset))
+    print(f"Number of datasets: {dataset.get_num_datasets()}")
+    print(f"Total episodes (train + val): {dataset.get_num_episodes()}")
+    print(f"Training dataset length: {len(dataset)}")
+
+    # Print detailed information for each dataset
+    for i in range(dataset.get_num_datasets()):
+        print(f"\nDataset {i}:")
+        print(f"  Zarr path: {dataset.zarr_paths[i]}")
+        print(f"  Total episodes: {dataset.get_num_episodes(index=i)}")
+        print(f"  Training episodes: {np.sum(dataset.train_masks[i])}")
+        print(f"  Validation episodes: {np.sum(dataset.val_masks[i])}")
+        print(f"  Sampling weight: {dataset.sample_probabilities[i]:.4f}")
+        print(f"  Sampler length: {len(dataset.samplers[i])}")
+
+    print(f"\nSample probabilities: {dataset.sample_probabilities}")
+    print("=" * 60)
 
     # Test get validation dataset
     for i in range(dataset.get_num_datasets()):
         val_dataset = dataset.get_validation_dataset(index=i)
-        print(f"Got validation dataset {i}")
+        print(f"Got validation dataset {i} with length: {len(val_dataset)}")
 
     # Test normalizer
     normalizer = dataset.get_normalizer()

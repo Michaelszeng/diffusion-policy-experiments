@@ -7,8 +7,9 @@
 echo "[submit_training.sh] Loading modules and virtual environment."
 source /etc/profile
 module load anaconda/2023b
+wandb offline
 
-# Assume current directory is gcs-diffusion
+# Assume current directory is diffusion-policy-experiments
 # source .robodiff/bin/activate || echo "Training with anaconda/2023b module instead of venv"
 
 # Set wandb to offline since Supercloud has no internet access
