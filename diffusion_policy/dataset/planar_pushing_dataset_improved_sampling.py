@@ -1,5 +1,7 @@
 import copy
+import math
 import os
+import time
 from typing import Dict
 
 import numpy as np
@@ -300,6 +302,13 @@ class PlanarPushingDataset(BaseImageDataset):
         return data
 
     def _validate_zarr_configs(self, zarr_configs):
+        """
+        Validate the zarr configs for the PlanarPushingDataset.
+        - Check if the zarr path exists
+        - Check if the max_train_episodes is greater than 0
+        - Check if the sampling_weight is greater than or equal to 0
+        - Check if all or none of the zarr_configs have a sampling_weight
+        """
         num_null_sampling_weights = 0
         N = len(zarr_configs)
 
@@ -348,6 +357,200 @@ class PlanarPushingDataset(BaseImageDataset):
         return torch_data
 
 
+def minimum_enclosing_circle(P, r, eps=1e-9):
+    """
+    Helper function to check if a given set of points fits within a circle of radius r.
+
+    Used to determine whether an action sequence is "idle".
+    """
+    P = np.asarray(P, dtype=np.float64)
+    n = P.shape[0]
+
+    if n <= 1:
+        return True
+
+    r2 = (r + eps) ** 2
+    max_pair_dist2 = (2 * r + eps) ** 2
+
+    # Cheap vectorised rejection
+    # Compute all-pair squared distances; stop early if any exceed allowable max
+    diff = P[:, None, :] - P[None, :, :]
+    dist2 = np.einsum("...i,...i->...", diff, diff)
+    if np.any(dist2 > max_pair_dist2):
+        return False
+
+    # Generate candidate circle centres (≤ O(n²))
+    candidates = []
+
+    # every point itself is a potential centre
+    candidates.extend(P)
+
+    # for every *distinct* pair generate up to two intersection centres
+    for i in range(n):
+        for j in range(i + 1, n):
+            p1, p2 = P[i], P[j]
+            dx, dy = p2 - p1
+            d = math.hypot(dx, dy)
+
+            # If the points are too far apart, their radius-r circles do not intersect
+            if d > 2 * r + eps:
+                continue
+
+            # Mid-point between p1 and p2
+            mx, my = (p1 + p2) * 0.5
+
+            # Distance from midpoint to each possible centre along the perpendicular
+            h2 = r * r - 0.25 * d * d
+            if h2 < 0:  # numerical safeguard
+                continue
+            if d == 0:  # coincident points, the midpoint itself is the only option
+                candidates.append(np.array([mx, my]))
+                continue
+
+            h = math.sqrt(h2)
+            # Unit vector perpendicular to (p2 - p1)
+            ux, uy = -dy / d, dx / d
+            offset = np.array([ux * h, uy * h])
+            candidates.append(np.array([mx, my]) + offset)
+            candidates.append(np.array([mx, my]) - offset)
+
+    # test candidates in vectorised form
+    P_expanded = P[None, :, :]  # shape (1, n, 2) broadcasted over candidates
+    for c in candidates:
+        # squared distances from candidate to every point
+        if np.all(np.sum((P_expanded - c) ** 2, axis=-1) <= r2):
+            return True
+
+    return False
+
+
+def prune_idle_actions(dataset, new_dataset_name, idle_tolerance=0.001):
+    """
+    Prune idle (no-op) actions from every dataset contained in the provided
+    `PlanarPushingDataset` instance. Saves the pruned dataset to a new zarr file.
+
+    Individual idle frames are removed from episodes. Episodes that are entirely
+    idle (all frames are idle) are removed completely from the dataset.
+
+    Args:
+        dataset: PlanarPushingDataset object.
+        new_dataset_name: Name for the new pruned dataset (will be saved at the same
+                          location as original with this name).
+        idle_tolerance: Maximum radius for actions to be considered idle.
+    """
+    n_obs_steps = dataset.n_obs_steps
+
+    start_time = time.time()
+
+    # Iterate over each underlying dataset / replay buffer
+    for dataset_idx, (replay_buffer, zarr_path) in enumerate(zip(dataset.replay_buffers, dataset.zarr_paths)):
+        print(f"\nProcessing dataset {dataset_idx + 1}/{len(dataset.replay_buffers)}: {zarr_path}")
+
+        # Get all keys in the replay buffer
+        keys = list(replay_buffer.keys())
+
+        # Create a mapping to track which frames to keep for each episode
+        episode_frame_masks = []  # List of boolean masks, one per episode
+        total_frames_before = 0
+        total_frames_before_non_stationary_episodes = 0
+        total_frames_after = 0
+        episodes_removed_indices = []
+
+        # Process each episode
+        n_episodes = replay_buffer.n_episodes
+        for episode_idx in range(n_episodes):
+            # Get episode data
+            episode_slice = replay_buffer.get_episode_slice(episode_idx)
+            episode_length = episode_slice.stop - episode_slice.start
+
+            # Get action data for this episode
+            actions = replay_buffer["action"][episode_slice]  # (T, action_dim)
+
+            # Initialize mask - keep all frames by default
+            keep_mask = np.ones(episode_length, dtype=bool)
+
+            # Check each possible window for idle actions
+            # Mark frames as idle if they're part of an idle window
+            for i in range(episode_length - n_obs_steps):
+                action_window = actions[i : i + n_obs_steps + 1]
+                if minimum_enclosing_circle(action_window, idle_tolerance):
+                    # Mark these frames as idle (to be removed)
+                    keep_mask[i : i + n_obs_steps + 1] = False
+
+            # Check if entire episode is idle
+            if not np.any(keep_mask):
+                # Mark episode for removal by using None
+                episode_frame_masks.append(None)
+                episodes_removed_indices.append(episode_idx)
+            else:
+                episode_frame_masks.append(keep_mask)
+                total_frames_before_non_stationary_episodes += episode_length
+                total_frames_after += np.sum(keep_mask)
+
+            total_frames_before += episode_length
+
+        num_pruned = total_frames_before_non_stationary_episodes - total_frames_after
+        prune_percentage = 100 * num_pruned / total_frames_before_non_stationary_episodes
+        print(f"  Episodes before pruning: {n_episodes}")
+        print(f"  Episodes after pruning: {n_episodes - len(episodes_removed_indices)}")
+        print(f"  Episodes removed: {episodes_removed_indices}")
+        print(f"  Frames in non-stationary episodes (before pruning): {total_frames_before_non_stationary_episodes}")
+        print(f"  Frames after pruning: {total_frames_after}")
+        print(f"  Frames pruned from non-stationary episodes: {num_pruned} ({prune_percentage:.2f}%)")
+        print(f"  Total frames in dataset (before): {total_frames_before}")
+        print(f"  Total frames in dataset (after): {total_frames_after}")
+
+        # Create new pruned replay buffer using the ReplayBuffer helper class
+        pruned_buffer = ReplayBuffer.create_empty_numpy()
+
+        # Add each pruned episode to the new buffer (skip entirely idle episodes)
+        for episode_idx in range(n_episodes):
+            keep_mask = episode_frame_masks[episode_idx]
+
+            # Skip episodes that are entirely idle (marked as None)
+            if keep_mask is None:
+                continue
+
+            episode_data = {}
+
+            # Extract pruned data for each key
+            for key in keys:
+                episode_slice = replay_buffer.get_episode_slice(episode_idx)
+                original_episode = replay_buffer[key][episode_slice]
+                # Keep only non-idle frames
+                pruned_episode = original_episode[keep_mask]
+                episode_data[key] = pruned_episode
+
+            # Add the pruned episode to the new buffer
+            pruned_buffer.add_episode(episode_data)
+
+        # Determine the new zarr path
+        original_dir = os.path.dirname(zarr_path)
+        new_zarr_path = os.path.join(original_dir, new_dataset_name)
+
+        # Save to new zarr file using ReplayBuffer's save method
+        print(f"  Saving pruned dataset to: {new_zarr_path}")
+
+        # Define compression for different data types
+        compressors = {}
+        for key in keys:
+            # Use stronger compression for image data
+            sample_data = pruned_buffer[key]
+            if len(sample_data.shape) == 4:  # Image data (T, H, W, C)
+                compressors[key] = "disk"  # zstd with bitshuffle
+            else:  # Low-dimensional data
+                compressors[key] = "default"  # lz4
+
+        pruned_buffer.save_to_path(new_zarr_path, compressors=compressors)
+
+        print("  Successfully saved pruned dataset!")
+
+    total_time = time.time() - start_time
+    print(f"\nTotal pruning time: {total_time:.2f} seconds")
+
+    return dataset
+
+
 if __name__ == "__main__":
     import random
 
@@ -386,7 +589,7 @@ if __name__ == "__main__":
     dataset = PlanarPushingDataset(
         zarr_configs=zarr_configs,
         shape_meta=shape_meta,
-        horizon=8,
+        horizon=16,
         n_obs_steps=n_obs_steps,
         pad_before=1,
         pad_after=7,
@@ -415,7 +618,7 @@ if __name__ == "__main__":
         print(f"  Sampling weight: {dataset.sample_probabilities[i]:.4f}")
         print(f"  Sampler length: {len(dataset.samplers[i])}")
 
-    print(f"\nSample probabilities: {dataset.sample_probabilities}")
+    print(f"\nPer-dataset sample probabilities: {dataset.sample_probabilities}")
     print("=" * 60)
 
     # Test get validation dataset
@@ -426,18 +629,24 @@ if __name__ == "__main__":
     # Test normalizer
     normalizer = dataset.get_normalizer()
 
+    dataset = prune_idle_actions(dataset, new_dataset_name="sim_sim_tee_data_carbon_large_pruned.zarr")
+    exit()
+
     for i in range(10):
         idx = random.randint(0, len(dataset) - 1)
-        # idx = i % len(dataset)
+        idx = i % len(dataset)
+
         sample = dataset[idx]
         states = sample["obs"]["agent_pos"]
         actions = sample["action"]
+
         print(f"Sample states : {states}")
         print(f"Sample actions: {actions}")
         print(f"Sample target : {sample['target']}")
         print()
         print("Press any key to continue. Ctrl+\\ to exit.\n")
 
+        # Just display camera (wrist and overhead) images
         for key, attr in sample["obs"].items():
             if key == "agent_pos":
                 continue
@@ -450,9 +659,9 @@ if __name__ == "__main__":
                 # image_array = cv2.cvtColor(image_array, cv2.COLOR_RGB2BGR)
 
                 # Display the image using OpenCV
-                cv2.imshow(f"{key}_{i}", image_array)
-                cv2.waitKey(0)  # Wait for a key press to close the image window
-                cv2.destroyAllWindows()
+                # cv2.imshow(f"{key}_{i}", image_array)
+                # cv2.waitKey(0)  # Wait for a key press to close the image window
+                # cv2.destroyAllWindows()
 
     # train_dataloader = DataLoader(
     #     dataset,
