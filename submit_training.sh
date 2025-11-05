@@ -7,7 +7,6 @@
 echo "[submit_training.sh] Loading modules and virtual environment."
 source /etc/profile
 module load anaconda/2023b
-wandb offline
 
 # Assume current directory is diffusion-policy-experiments
 # source .robodiff/bin/activate || echo "Training with anaconda/2023b module instead of venv"
@@ -26,8 +25,8 @@ echo "[submit_training.sh] Date: $DATE"
 echo "[submit_training.sh] Time: $TIME"
 
 CONFIG_DIR=config/planar_pushing
-CONFIG_NAME=24_obs.yaml
-HYDRA_RUN_DIR=data/outputs/planar_pushing/24_obs
+CONFIG_NAME=2_obs.yaml
+HYDRA_RUN_DIR=data/outputs/planar_pushing/v4/2_obs
 
 python train.py --config-dir=$CONFIG_DIR --config-name=$CONFIG_NAME \
 	hydra.run.dir=$HYDRA_RUN_DIR
