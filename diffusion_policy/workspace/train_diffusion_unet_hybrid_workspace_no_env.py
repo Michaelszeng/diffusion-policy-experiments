@@ -11,6 +11,7 @@ import copy
 import os
 import pathlib
 import random
+from collections import defaultdict
 
 import dill
 import hydra
@@ -165,6 +166,7 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
         if cfg.training.use_ema:
             self.ema_model.set_normalizer(normalizer)
 
+        # If total_train_steps is set, use it to determine and override num_epochs
         training_steps = getattr(cfg.training, "total_train_steps", None)
         if training_steps is not None:
             assert cfg.training.gradient_accumulate_every == 1, (
@@ -189,9 +191,7 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
             last_epoch=self.global_step - 1,
         )
 
-        from collections import defaultdict
-
-        if getattr(cfg.policy, "rescale_encoder_gradients", False) == True:
+        if getattr(cfg.policy, "rescale_encoder_gradients", False):
             hooks_by_param = defaultdict(list)
             for name, p in self.model.obs_encoder.named_parameters():
                 # getattr will return {} if no hooks were registered
@@ -224,7 +224,7 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
 
         # configure checkpoint
         assert cfg.training.checkpoint_every % cfg.training.val_every == 0
-        if not isinstance(cfg.checkpoint, ListConfig):
+        if not isinstance(cfg.checkpoint, ListConfig):  # Single checkpoint manager
             # configure single checkpoint manager
             topk_managers = [
                 TopKCheckpointManager(
@@ -234,8 +234,7 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
             ]
             save_last_ckpt = cfg.checkpoint.save_last_ckpt
             save_last_snapshot = cfg.checkpoint.save_last_snapshot
-        else:
-            # configure multiple checkpoint managers
+        else:  # Multiple checkpoint managers
             topk_managers = []
             save_last_ckpt = False
             save_last_snapshot = False
@@ -467,9 +466,11 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
 
                 # checkpoint
                 if (self.epoch % cfg.training.checkpoint_every) == 0:
-                    # checkpointing
+                    # "latest.ckpt"
                     if save_last_ckpt:
                         self.save_checkpoint()
+
+                    # Optional full state snapshot
                     if save_last_snapshot:
                         self.save_snapshot()
 
@@ -479,9 +480,7 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                         new_key = key.replace("/", "_")
                         metric_dict[new_key] = value
 
-                    # We can't copy the last checkpoint here
-                    # since save_checkpoint uses threads.
-                    # therefore at this point the file might have been empty!
+                    # Metricbased Top-K checkpointing
                     topk_ckpt_paths = []
                     for i, topk_manager in enumerate(topk_managers):
                         protected_ckpts = self._get_protected_paths(i, topk_managers)
