@@ -1,17 +1,17 @@
 _target_: diffusion_policy.workspace.train_diffusion_unet_hybrid_workspace_no_env.TrainDiffusionUnetHybridWorkspaceNoEnv
 checkpoint:
+  # - save_last_ckpt: true
+  #   save_last_snapshot: false
+  #   topk:  # Save top k checkpoints
+  #     format_str: epoch={epoch:03d}-val_loss={val_loss:.4f}-val_ddim_mse={val_ddim_mse:.6f}.ckpt
+  #     k: 0
+  #     mode: min
+  #     monitor_key: val_loss_0
   - save_last_ckpt: true
     save_last_snapshot: false
     topk:  # Save top k checkpoints
-      format_str: epoch={epoch:04d}-val_loss={val_loss:.4f}-val_ddim_mse={val_ddim_mse:.4f}.ckpt
-      k: 5
-      mode: min
-      monitor_key: val_loss_0
-  - save_last_ckpt: true
-    save_last_snapshot: false
-    topk:  # Save top k checkpoints
-      format_str: epoch={epoch:04d}-val_loss={val_loss:.4f}-val_ddim_mse={val_ddim_mse:.4f}.ckpt
-      k: 5
+      format_str: epoch={epoch:03d}-val_loss={val_loss:.4f}-val_ddim_mse={val_ddim_mse:.6f}.ckpt
+      k: 15
       mode: min
       monitor_key: val_ddim_mse_0
 dataloader:
@@ -131,9 +131,10 @@ training:
   gradient_accumulate_every: 1
   lr_scheduler: cosine
   lr_warmup_steps: 500
-  max_train_steps: null
+  max_train_steps: null  # per epoch training steps
   max_val_steps: null
-  num_epochs: 200 # 70 for 50, 2000; 200 for 50, 500
+  total_train_steps: 104600
+  num_epochs: null # 70 for 50, 2000; 200 for 50, 500
   resume: false
   rollout_every: 5  # UNUSED -- no environment rollouts during training
   sample_every: ${training.checkpoint_every}  # validation using DDPM output
