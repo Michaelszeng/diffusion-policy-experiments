@@ -48,7 +48,6 @@ horizon: 16
 n_action_steps: 8  # Inference-only parameter
 n_latency_steps: 0  # How many timesteps to offset the action predictions back by to account for inference time/latency
 n_obs_steps: 2  # Number of observation steps to condition on
-name: train_diffusion_unet_hybrid
 shape_meta:
   action:
     shape:
@@ -100,7 +99,8 @@ policy:  # Parameters to be passed to policy (i.e. the _target_ policy class bel
   obs_encoder_group_norm: true
   use_target_cond: false  # Maniskill tasks may not have explicit targets
   shape_meta: ${shape_meta}
-  pretrained_encoder: false
+  pretrained_obs_encoder: false
+  inference_loading: false
 task:
   dataset:
     _target_: diffusion_policy.dataset.maniskill_dataset.ManiskillDataset

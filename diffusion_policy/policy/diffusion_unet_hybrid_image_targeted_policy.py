@@ -48,9 +48,9 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         eval_fixed_crop=False,
         num_DDPM_inference_steps=100,
         num_DDIM_inference_steps=10,
-        pretrained_encoder=False,
-        freeze_pretrained_encoder=False,
-        initialize_obs_encoder=None,
+        pretrained_obs_encoder=False,
+        freeze_pretrained_obs_encoder=False,
+        self_trained_obs_encoder=None,
         freeze_self_trained_obs_encoder=False,
         inference_loading=False,
         past_action_visible=False,
@@ -96,8 +96,8 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
             hdf5_type="image",
             task_name="square",
             dataset_type="ph",
-            pretrained_encoder=pretrained_encoder,
-            freeze_pretrained_encoder=freeze_pretrained_encoder,
+            pretrained_obs_encoder=pretrained_obs_encoder,
+            freeze_pretrained_obs_encoder=freeze_pretrained_obs_encoder,
         )
 
         with config.unlocked():
@@ -182,13 +182,33 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         )
 
         if not inference_loading:
-            if initialize_obs_encoder is not None:
-                print(f"Loading obs encoder from {initialize_obs_encoder}")
-                state_dict = torch.load(initialize_obs_encoder, map_location="cpu")
-                obs_encoder.load_state_dict(state_dict, strict=True)
+            if self_trained_obs_encoder is not None:
+                print(f"Loading obs encoder from {self_trained_obs_encoder}")
+                checkpoint = torch.load(self_trained_obs_encoder, map_location="cpu")  # Load the full checkpoint
+
+                # Extract the model state dict from the checkpoint
+                full_model_state_dict = checkpoint["state_dicts"]["model"]
+
+                # Extract only obs_encoder weights
+                # Keys are "module.obs_encoder.*"
+                obs_encoder_state_dict = {}
+                prefix = "module.obs_encoder."
+                for key, value in full_model_state_dict.items():
+                    if key.startswith(prefix):
+                        # Remove the "module.obs_encoder." prefix
+                        new_key = key[len(prefix) :]
+                        obs_encoder_state_dict[new_key] = value
+
+                if len(obs_encoder_state_dict) == 0:
+                    raise ValueError(
+                        f"No obs_encoder weights found in checkpoint. Keys present: {list(full_model_state_dict.keys())}"
+                    )
+
+                print(f"Loaded {len(obs_encoder_state_dict)} obs_encoder parameters")
+                obs_encoder.load_state_dict(obs_encoder_state_dict, strict=True)
 
                 if freeze_self_trained_obs_encoder:
-                    for param in self.obs_encoder.parameters():
+                    for param in obs_encoder.parameters():
                         param.requires_grad = False
 
         # Create a DDIM sampler that mirrors the DDPM β-schedule

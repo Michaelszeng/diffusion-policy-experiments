@@ -38,11 +38,11 @@ exp_name: defaults
 logging:  # wandb logging configuration
   group: null
   id: null
-  name: 2_obs
+  name: 2_obs_long_context
   project: t_pushing
   resume: true
 multi_run:
-  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_hybrid_pusher
+  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_hybrid_pusher_long_context
   run_dir: data/outputs/${multi_run.wandb_name_base}
 horizon: 16
 n_action_steps: 8  # Inference-only parameter
@@ -103,6 +103,8 @@ policy:  # Parameters to be passed to policy (i.e. the _target_ policy class bel
   target_dim: 3  # 3 dims for 2D pose of T
   shape_meta: ${shape_meta}
   pretrained_obs_encoder: false
+  self_trained_obs_encoder: "/home/michzeng/diffusion-policy/data/outputs/planar_pushing/2_obs/checkpoints/epoch=130-val_loss=0.0408-val_ddim_mse=0.000488.ckpt"  # For long context, we use a (frozen) pretrained obs encoder from short context
+  freeze_self_trained_obs_encoder: true
   inference_loading: false
 task:
   dataset:
