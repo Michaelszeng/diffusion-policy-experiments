@@ -1,0 +1,160 @@
+_target_: diffusion_policy.workspace.train_diffusion_unet_hybrid_workspace_no_env.TrainDiffusionUnetHybridWorkspaceNoEnv
+checkpoint:
+  # - save_last_ckpt: true
+  #   save_last_snapshot: false
+  #   topk:  # Save top k checkpoints
+  #     format_str: epoch={epoch:03d}-val_loss={val_loss:.4f}-val_ddim_mse={val_ddim_mse:.6f}.ckpt
+  #     k: 0
+  #     mode: min
+  #     monitor_key: val_loss_0
+  - save_last_ckpt: true
+    save_last_snapshot: false
+    topk:  # Save top k checkpoints
+      format_str: epoch={epoch:03d}-val_loss={val_loss:.4f}-val_ddim_mse={val_ddim_mse:.6f}.ckpt
+      k: 15
+      mode: min
+      monitor_key: val_ddim_mse_0
+dataloader:
+  batch_size: 64
+  num_workers: 8
+  persistent_workers: false
+  pin_memory: true
+  shuffle: true
+val_dataloader:
+  batch_size: 64
+  num_workers: 8
+  persistent_workers: false
+  pin_memory: true
+  drop_last: true  # Drop the last batch if it's not full
+  shuffle: true
+ema:
+  _target_: diffusion_policy.model.diffusion.ema_model.EMAModel
+  inv_gamma: 1.0
+  max_value: 0.9999
+  min_value: 0.0
+  power: 0.75
+  update_after_step: 0
+exp_name: defaults
+logging:  # wandb logging configuration
+  group: null
+  id: null
+  name: 2_obs
+  project: maniskill_diffusion
+  resume: true
+multi_run:
+  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_hybrid_maniskill
+  run_dir: data/outputs/${multi_run.wandb_name_base}
+horizon: 16
+n_action_steps: 8  # Inference-only parameter
+n_latency_steps: 0  # How many timesteps to offset the action predictions back by to account for inference time/latency
+n_obs_steps: 2  # Number of observation steps to condition on
+name: train_diffusion_unet_hybrid
+shape_meta:
+  action:
+    shape:
+    - 7  # 7-DOF robot arm action from ManiSkill inspection
+  obs:
+    agent_pos:
+      # IMPORTANT: Shape depends on state_mode setting below!
+      # - qpos_qvel: [14] (joint positions + velocities: 7 + 7)
+      # - qpos: [7] (joint positions only)  
+      # - tcp_pose: [7] (end-effector pose: position + quaternion)
+      shape:
+      - 14  # Currently configured for qpos_qvel mode
+      type: low_dim
+    base_camera:
+      shape:
+      - 3
+      - 128
+      - 128
+      type: rgb
+policy:  # Parameters to be passed to policy (i.e. the _target_ policy class below)
+  _target_: diffusion_policy.policy.diffusion_unet_hybrid_image_targeted_policy.DiffusionUnetHybridImageTargetedPolicy
+  cond_predict_scale: true
+  crop_shape:
+  - 112
+  - 112
+  diffusion_step_embed_dim: 128
+  down_dims:
+  - 256
+  - 512
+  - 1024
+  eval_fixed_crop: true  # fix image cropping during evaluation
+  kernel_size: 5  # kernel size (in time-dimension) for 1D convolutions in UNet
+  n_groups: 8  # Number of groups for group norm
+  horizon: 16
+  n_action_steps: 8
+  n_obs_steps: 2
+  past_action_visible: false  # explicitely condition on past actions
+  DDPM_noise_scheduler:
+    _target_: diffusers.schedulers.scheduling_ddpm.DDPMScheduler
+    beta_end: 0.02
+    beta_schedule: squaredcos_cap_v2
+    beta_start: 0.0001
+    clip_sample: true
+    num_train_timesteps: 100
+    prediction_type: epsilon
+    variance_type: fixed_small
+  num_DDPM_inference_steps: 100  # DDPM scheduler is used during training/validation
+  num_DDIM_inference_steps: 10  # DDIM scheduler is used during inference
+  obs_encoder_group_norm: true
+  use_target_cond: false  # Maniskill tasks may not have explicit targets
+  shape_meta: ${shape_meta}
+  pretrained_encoder: false
+task:
+  dataset:
+    _target_: diffusion_policy.dataset.maniskill_dataset.ManiskillDataset
+    shape_meta: ${shape_meta}
+    horizon: 16
+    n_obs_steps: 2
+    # We pad before and after the training episode to maximize data usage.
+    # Padding before repeats the first observation pad_before times so that the policy can start predicting actions right at the episode's start.
+    # Padding after just allows the policy to predict actions past the end of the episode (in this case, loss is measured against the final action repeated pad_after times).
+    pad_after: ${eval:${policy.n_action_steps} - 1}
+    pad_before: ${eval:${task.dataset.n_obs_steps} - 1}
+    seed: 42
+    state_mode: "qpos_qvel"  # Options: "qpos_qvel", "qpos", "tcp_pose"
+    # IMPORTANT: Update shape_meta.obs.agent_pos.shape above to match this mode:
+    # - qpos_qvel: shape=[14] (joint pos + vel: 7+7)
+    # - qpos: shape=[7] (joint positions only)
+    # - tcp_pose: shape=[7] (end-effector pose)
+    camera_keys:
+      - "base_camera"  # Extract RGB images from obs/sensor_data/base_camera/rgb
+    h5_configs:
+    - h5_path: /home/michzeng/.maniskill/demos/PushT-v1/rl/trajectory.rgb.pd_joint_delta_pos.physx_cuda.h5  # RGB ManiSkill dataset
+      json_path: /home/michzeng/.maniskill/demos/PushT-v1/rl/trajectory.rgb.pd_joint_delta_pos.physx_cuda.json  # JSON metadata
+      max_train_episodes: null  # Set to desired number of training episodes (null = use all)
+      sampling_weight: null  # Relative sampling weight (null = proportional to number of episodes)
+      val_ratio: 0.1  # 10% for validation
+  name: maniskill_scene
+  shape_meta: ${shape_meta} # not used?
+task_name: maniskill
+training:
+  checkpoint_every: 5
+  debug: false
+  device: cuda
+  gradient_accumulate_every: 1
+  lr_scheduler: cosine
+  lr_warmup_steps: 500
+  max_train_steps: null  # per epoch training steps
+  max_val_steps: null
+  total_train_steps: 104600
+  num_epochs: null # 70 for 50, 2000; 200 for 50, 500
+  resume: false
+  rollout_every: 5  # UNUSED -- no environment rollouts during training
+  sample_every: ${training.checkpoint_every}  # validation using DDPM output
+  seed: 42
+  tqdm_interval_sec: 30.0
+  use_ema: true
+  val_every: 1
+  log_val_mse: true
+  eval_mse_DDPM: true
+  eval_mse_DDIM: true
+optimizer:
+  _target_: torch.optim.AdamW
+  betas:
+  - 0.95
+  - 0.999
+  eps: 1.0e-08
+  lr: 0.0001
+  weight_decay: 1.0e-06
