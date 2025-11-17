@@ -30,9 +30,6 @@ class CropRandomizer(nn.Module):
         super().__init__()
 
         assert len(input_shape) == 3  # (C, H, W)
-        assert crop_height < input_shape[1]
-        assert crop_width < input_shape[2]
-
         self.input_shape = input_shape
         self.crop_height = crop_height
         self.crop_width = crop_width
@@ -279,6 +276,16 @@ def sample_random_image_crops(images, crop_height, crop_width, num_crops, pos_en
     image_c, image_h, image_w = source_im.shape[-3:]
     max_sample_h = image_h - crop_height
     max_sample_w = image_w - crop_width
+
+    # Debug / safety check: cropping region must fit inside the image
+    # If this fails, it usually means there is a mismatch between the configured
+    # crop_shape in the policy config and the actual image size reaching the encoder.
+    if max_sample_h <= 0 or max_sample_w <= 0:
+        raise ValueError(
+            "CropRandomizer configuration error: crop size "
+            f"({crop_height}, {crop_width}) is not strictly smaller than image size "
+            f"({image_h}, {image_w}). Received images with shape {tuple(source_im.shape)}."
+        )
 
     # Sample crop locations for all tensor dimensions up to the last 3, which are [C, H, W].
     # Each gets @num_crops samples - typically this will just be the batch dimension (B), so

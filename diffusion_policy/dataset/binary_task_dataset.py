@@ -16,26 +16,8 @@ from diffusion_policy.common.sampler import (
     downsample_mask,
     get_val_mask,
 )
-from diffusion_policy.dataset.base_dataset import BaseImageDataset
+from diffusion_policy.dataset.base_dataset import BaseImageDataset, gaussian_kernel, low_pass_filter
 from diffusion_policy.model.common.normalizer import LinearNormalizer
-
-
-def gaussian_kernel(kernel_size=9, sigma=3, channels=3):
-    """Create a Gaussian kernel for convolution."""
-    # Create 1D Gaussian
-    coords = torch.arange(kernel_size).float() - (kernel_size - 1) / 2.0
-    g = torch.exp(-(coords**2) / (2 * sigma**2))
-    g = g / g.sum()
-    # Create 2D Gaussian
-    g2 = g[:, None] * g[None, :]
-    kernel = g2.expand(channels, 1, kernel_size, kernel_size)
-    return kernel
-
-
-def low_pass_filter(x, kernel):
-    """Apply low-pass (Gaussian blur) filter to input tensor x."""
-    padding = kernel.shape[-1] // 2
-    return F.conv2d(x, kernel, padding=padding, groups=x.shape[1])
 
 
 class BinaryTaskDataset(BaseImageDataset):
@@ -126,16 +108,6 @@ class BinaryTaskDataset(BaseImageDataset):
             self.val_masks.append(val_mask)
 
             # Set up sampler
-            # self.samplers.append(
-            #     SequenceSampler(
-            #         replay_buffer=self.replay_buffers[-1],
-            #         sequence_length=horizon,
-            #         pad_before=pad_before,
-            #         pad_after=pad_after,
-            #         episode_mask=train_mask,
-            #         key_first_k=key_first_k
-            #     )
-            # )
             self.samplers.append(
                 ImprovedDatasetSampler(
                     replay_buffer=self.replay_buffers[-1],
@@ -154,8 +126,9 @@ class BinaryTaskDataset(BaseImageDataset):
             # else:
             # self.sample_probabilities[i] = np.sum(train_mask)
             self.zarr_paths.append(zarr_path)
+
         # Normalize sample_probabilities
-        # self.sample_probabilities = self._normalize_sample_probabilities(self.sample_probabilities)
+        self.sample_probabilities = self._normalize_sample_probabilities(self.sample_probabilities)
 
         # Set up color jitter
         self.color_jitter = color_jitter
@@ -197,13 +170,6 @@ class BinaryTaskDataset(BaseImageDataset):
         val_set.one_hot_encoding = np.zeros(self.num_datasets).astype(np.float32)
         val_set.one_hot_encoding[index] = 1
 
-        # val_set.samplers = [SequenceSampler(
-        #     replay_buffer=self.replay_buffers[index],
-        #     sequence_length=self.horizon,
-        #     pad_before=self.pad_before,
-        #     pad_after=self.pad_after,
-        #     episode_mask=self.val_masks[index]
-        # )]
         val_set.samplers = [
             ImprovedDatasetSampler(
                 replay_buffer=self.replay_buffers[index],
@@ -344,11 +310,6 @@ class BinaryTaskDataset(BaseImageDataset):
 
         if num_null_sampling_weights not in [0, N]:
             raise ValueError("Either all or none of the zarr_configs must have a sampling_weight")
-
-    # def _normalize_sample_probabilities(self, sample_probabilities):
-    #     total = np.sum(sample_probabilities)
-    #     assert total > 0, "Sum of sampling weights must be greater than 0"
-    #     return sample_probabilities / total
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         # To sample a sequence, first sample a dataset,

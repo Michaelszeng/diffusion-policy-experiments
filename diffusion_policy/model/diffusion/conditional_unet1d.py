@@ -49,11 +49,7 @@ class ConditionalResidualBlock1D(nn.Module):
         )
 
         # make sure dimensions compatible
-        self.residual_conv = (
-            nn.Conv1d(in_channels, out_channels, 1)
-            if in_channels != out_channels
-            else nn.Identity()
-        )
+        self.residual_conv = nn.Conv1d(in_channels, out_channels, 1) if in_channels != out_channels else nn.Identity()
 
     def forward(self, x, cond):
         """
@@ -78,6 +74,20 @@ class ConditionalResidualBlock1D(nn.Module):
 
 
 class ConditionalUnet1D(nn.Module):
+    """
+    1D UNet architecture for diffusion models with multi-scale conditioning.
+
+    The network follows a classic UNet encoder-decoder structure:
+    - Encoder (down_modules): downsamples and increases channels
+    - Bottleneck (mid_modules): processes the most compressed representation
+    - Decoder (up_modules): upsamples with skip connections from encoder
+
+    Supports three types of conditioning:
+    - global_cond: time-invariant features (e.g., observation history) - applied via FiLM
+    - local_cond: time-varying features (e.g., per-timestep observations) - added as features (not currently used)
+    - target_cond: goal/target states - applied via FiLM
+    """
+
     def __init__(
         self,
         input_dim,
@@ -88,12 +98,14 @@ class ConditionalUnet1D(nn.Module):
         down_dims=[256, 512, 1024],
         kernel_size=3,
         n_groups=8,
-        cond_predict_scale=False,  # Expect this to be True
+        cond_predict_scale=False,
     ):
         super().__init__()
+        # Dimension list: [input_dim, down_dims[0], down_dims[1], down_dims[2]]
         all_dims = [input_dim] + list(down_dims)
         start_dim = down_dims[0]
 
+        # Diffusion Timestep Encoding
         dsed = diffusion_step_embed_dim
         diffusion_step_encoder = nn.Sequential(
             SinusoidalPosEmb(dsed),
@@ -101,21 +113,25 @@ class ConditionalUnet1D(nn.Module):
             nn.Mish(),
             nn.Linear(dsed * 4, dsed),
         )
+
+        # Conditioning Dimension Calculation - timestep embedding + global + target
         cond_dim = dsed
         if global_cond_dim is not None:
             cond_dim += global_cond_dim
         if target_dim is not None:
             cond_dim += target_dim
 
+        # Pairs of (input_dim, output_dim) for each down/up layer
         in_out = list(zip(all_dims[:-1], all_dims[1:]))
 
+        # Local Conditioning Encoder - Processes time-varying local conditions (e.g., observations at each timestep)
         local_cond_encoder = None
         if local_cond_dim is not None:
             _, dim_out = in_out[0]
             dim_in = local_cond_dim
             local_cond_encoder = nn.ModuleList(
                 [
-                    # down encoder
+                    # Encoder for down path - will be added to first down layer
                     ConditionalResidualBlock1D(
                         dim_in,
                         dim_out,
@@ -124,7 +140,7 @@ class ConditionalUnet1D(nn.Module):
                         n_groups=n_groups,
                         cond_predict_scale=cond_predict_scale,
                     ),
-                    # up encoder
+                    # Encoder for up path - will be added to last up layer
                     ConditionalResidualBlock1D(
                         dim_in,
                         dim_out,
@@ -136,6 +152,7 @@ class ConditionalUnet1D(nn.Module):
                 ]
             )
 
+        # Bottleneck (Middle) Modules - Process the most compressed representation; 2 residual blocks
         mid_dim = all_dims[-1]
         self.mid_modules = nn.ModuleList(
             [
@@ -158,6 +175,7 @@ class ConditionalUnet1D(nn.Module):
             ]
         )
 
+        # Encoder (Down) Path - Downsample; during forward(), outputs are saved for skip connections
         down_modules = nn.ModuleList([])
         for ind, (dim_in, dim_out) in enumerate(in_out):
             is_last = ind >= (len(in_out) - 1)
@@ -180,11 +198,13 @@ class ConditionalUnet1D(nn.Module):
                             n_groups=n_groups,
                             cond_predict_scale=cond_predict_scale,
                         ),
+                        # Except at the last Down block, downsample using simple Conv1d
                         Downsample1d(dim_out) if not is_last else nn.Identity(),
                     ]
                 )
             )
 
+        # Decoder (Up) Path - Upsample; note that skip connections are wired in the forward() function
         up_modules = nn.ModuleList([])
         for ind, (dim_in, dim_out) in enumerate(reversed(in_out[1:])):
             is_last = ind >= (len(in_out) - 1)
@@ -192,7 +212,7 @@ class ConditionalUnet1D(nn.Module):
                 nn.ModuleList(
                     [
                         ConditionalResidualBlock1D(
-                            dim_out * 2,
+                            dim_out * 2,  # *2 for skip connection concatenation
                             dim_in,
                             cond_dim=cond_dim,
                             kernel_size=kernel_size,
@@ -207,11 +227,13 @@ class ConditionalUnet1D(nn.Module):
                             n_groups=n_groups,
                             cond_predict_scale=cond_predict_scale,
                         ),
+                        # Except at the last Up block, upsample using simple ConvTranspose1d
                         Upsample1d(dim_in) if not is_last else nn.Identity(),
                     ]
                 )
             )
 
+        # Output Head - Final convolution to produce output with original input_dim channels
         final_conv = nn.Sequential(
             Conv1dBlock(start_dim, start_dim, kernel_size=kernel_size),
             nn.Conv1d(start_dim, input_dim, 1),
@@ -224,9 +246,7 @@ class ConditionalUnet1D(nn.Module):
         self.final_conv = final_conv
         self.global_cond_dim = global_cond_dim
 
-        logger.info(
-            "number of parameters: %e", sum(p.numel() for p in self.parameters())
-        )
+        logger.info("number of parameters: %e", sum(p.numel() for p in self.parameters()))
 
     def forward(
         self,
@@ -251,9 +271,7 @@ class ConditionalUnet1D(nn.Module):
         timesteps = timestep
         if not torch.is_tensor(timesteps):
             # TODO: this requires sync between CPU and GPU. So try to pass timesteps as tensors if you can
-            timesteps = torch.tensor(
-                [timesteps], dtype=torch.long, device=sample.device
-            )
+            timesteps = torch.tensor([timesteps], dtype=torch.long, device=sample.device)
         elif torch.is_tensor(timesteps) and len(timesteps.shape) == 0:
             timesteps = timesteps[None].to(sample.device)
         # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
@@ -337,9 +355,7 @@ class VariableConditionalUnet1D(ConditionalUnet1D):
         timesteps = timestep
         if not torch.is_tensor(timesteps):
             # TODO: this requires sync between CPU and GPU. So try to pass timesteps as tensors if you can
-            timesteps = torch.tensor(
-                [timesteps], dtype=torch.long, device=sample.device
-            )
+            timesteps = torch.tensor([timesteps], dtype=torch.long, device=sample.device)
         elif torch.is_tensor(timesteps) and len(timesteps.shape) == 0:
             timesteps = timesteps[None].to(sample.device)
         # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
@@ -349,9 +365,7 @@ class VariableConditionalUnet1D(ConditionalUnet1D):
 
         # Concatenate global conditioning (ex. observation history)
         if global_cond is not None and global_cond_late is not None:
-            assert threshold is not None, (
-                "Threshold must be provided when using global_cond_late"
-            )
+            assert threshold is not None, "Threshold must be provided when using global_cond_late"
             mask = (timesteps > threshold).unsqueeze(-1)
             chosen = torch.where(mask, global_cond, global_cond_late)
             global_feature = torch.cat([global_feature, chosen], axis=-1)

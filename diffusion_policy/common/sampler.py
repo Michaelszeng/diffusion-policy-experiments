@@ -44,12 +44,8 @@ def create_indices(
             if debug:
                 assert start_offset >= 0
                 assert end_offset >= 0
-                assert (sample_end_idx - sample_start_idx) == (
-                    buffer_end_idx - buffer_start_idx
-                )
-            indices.append(
-                [buffer_start_idx, buffer_end_idx, sample_start_idx, sample_end_idx]
-            )
+                assert (sample_end_idx - sample_start_idx) == (buffer_end_idx - buffer_start_idx)
+            indices.append([buffer_start_idx, buffer_end_idx, sample_start_idx, sample_end_idx])
     indices = np.array(indices)
     return indices
 
@@ -82,11 +78,12 @@ def downsample_mask(mask, max_n, seed=0):
     return train_mask
 
 
-class SequenceSampler:
+class ImprovedDatasetSampler:
     def __init__(
         self,
         replay_buffer: ReplayBuffer,
         sequence_length: int,
+        shape_meta: dict,
         pad_before: int = 0,
         pad_after: int = 0,
         keys=None,
@@ -97,8 +94,6 @@ class SequenceSampler:
         key_first_k: dict str: int
             Only take first k data from these keys (to improve perf)
         """
-
-        super().__init__()
         assert sequence_length >= 1
         if keys is None:
             keys = list(replay_buffer.keys())
@@ -125,88 +120,17 @@ class SequenceSampler:
         self.replay_buffer = replay_buffer
         self.key_first_k = key_first_k
 
+        # ImprovedDatasetSampler-specific initialization
+        self.shape_meta = shape_meta
+        self.obs_dict_keys = shape_meta["obs"].keys()
+        self.rgb_keys = [key for key in self.obs_dict_keys if shape_meta["obs"][key]["type"] == "rgb"]
+        self.data_dict_keys = [key for key in self.keys if key not in self.obs_dict_keys]
+
     def __len__(self):
         return len(self.indices)
 
-    def sample_sequence(self, idx):
-        buffer_start_idx, buffer_end_idx, sample_start_idx, sample_end_idx = (
-            self.indices[idx]
-        )
-        result = dict()
-        for key in self.keys:
-            input_arr = self.replay_buffer[key]
-            # performance optimization, avoid small allocation if possible
-            if key not in self.key_first_k:
-                sample = input_arr[buffer_start_idx:buffer_end_idx]
-            else:
-                # performance optimization, only load used obs steps
-                n_data = buffer_end_idx - buffer_start_idx
-                k_data = min(self.key_first_k[key], n_data)
-                # fill value with Nan to catch bugs
-                # the non-loaded region should never be used
-                sample = np.full(
-                    (n_data,) + input_arr.shape[1:],
-                    fill_value=np.nan,
-                    dtype=input_arr.dtype,
-                )
-                try:
-                    sample[:k_data] = input_arr[
-                        buffer_start_idx : buffer_start_idx + k_data
-                    ]
-                except Exception:
-                    import pdb
-
-                    pdb.set_trace()
-            data = sample
-            if (sample_start_idx > 0) or (sample_end_idx < self.sequence_length):
-                data = np.zeros(
-                    shape=(self.sequence_length,) + input_arr.shape[1:],
-                    dtype=input_arr.dtype,
-                )
-                if sample_start_idx > 0:
-                    data[:sample_start_idx] = sample[0]
-                if sample_end_idx < self.sequence_length:
-                    data[sample_end_idx:] = sample[-1]
-                data[sample_start_idx:sample_end_idx] = sample
-            result[key] = data
-        return result
-
-
-class ImprovedDatasetSampler(SequenceSampler):
-    def __init__(
-        self,
-        replay_buffer: ReplayBuffer,
-        sequence_length: int,
-        shape_meta: dict,
-        pad_before: int = 0,
-        pad_after: int = 0,
-        keys=None,
-        key_first_k=dict(),
-        episode_mask: Optional[np.ndarray] = None,
-    ):
-        super().__init__(
-            replay_buffer=replay_buffer,
-            sequence_length=sequence_length,
-            pad_before=pad_before,
-            pad_after=pad_after,
-            keys=keys,
-            key_first_k=key_first_k,
-            episode_mask=episode_mask,
-        )
-
-        self.shape_meta = shape_meta
-        self.obs_dict_keys = shape_meta["obs"].keys()
-        self.rgb_keys = [
-            key for key in self.obs_dict_keys if shape_meta["obs"][key]["type"] == "rgb"
-        ]
-        self.data_dict_keys = [
-            key for key in self.keys if key not in self.obs_dict_keys
-        ]
-
     def sample_data(self, idx):
-        buffer_start_idx, buffer_end_idx, sample_start_idx, sample_end_idx = (
-            self.indices[idx]
-        )
+        buffer_start_idx, buffer_end_idx, sample_start_idx, sample_end_idx = self.indices[idx]
         datagram = dict()
         datagram["obs"] = dict()
         for key in self.keys:
@@ -218,7 +142,7 @@ class ImprovedDatasetSampler(SequenceSampler):
                 # performance optimization, only load used obs steps
                 n_data = buffer_end_idx - buffer_start_idx
                 k_data = min(self.key_first_k[key], n_data)
-                # fill value with Nan to catch bugs
+                # fill value with NaN to catch bugs
                 # the non-loaded region should never be used
                 sample = np.full(
                     (n_data,) + input_arr.shape[1:],
@@ -226,9 +150,7 @@ class ImprovedDatasetSampler(SequenceSampler):
                     dtype=input_arr.dtype,
                 )
                 try:
-                    sample[:k_data] = input_arr[
-                        buffer_start_idx : buffer_start_idx + k_data
-                    ]
+                    sample[:k_data] = input_arr[buffer_start_idx : buffer_start_idx + k_data]
                 except Exception:
                     import pdb
 

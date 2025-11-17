@@ -18,12 +18,12 @@ import hydra
 import numpy as np
 import torch
 import tqdm
-import wandb
 from omegaconf import ListConfig, OmegaConf
 from torch.cuda.amp import GradScaler, autocast
 from torch.nn.parallel import DataParallel
 from torch.utils.data import DataLoader
 
+import wandb
 from diffusion_policy.common.checkpoint_util import TopKCheckpointManager
 from diffusion_policy.common.json_logger import JsonLogger
 from diffusion_policy.common.pytorch_util import dict_apply, optimizer_to
@@ -516,7 +516,14 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
 
         for i in range(self.num_datasets):
             val_dataset = dataset.get_validation_dataset(i)
-            print(f"Dataset {i}: {dataset.zarr_paths[i]}")
+            # Support both zarr_paths and h5_paths for different dataset types
+            if hasattr(dataset, "zarr_paths"):
+                dataset_path = dataset.zarr_paths[i]
+            elif hasattr(dataset, "h5_paths"):
+                dataset_path = dataset.h5_paths[i]
+            else:
+                dataset_path = "Unknown dataset path"
+            print(f"Dataset {i}: {dataset_path}")
             print("------------------------------------------------")
             print(f"Number of training demonstrations: {np.sum(dataset.train_masks[i])}")
             print(f"Number of validation demonstrations: {np.sum(dataset.val_masks[i])}")

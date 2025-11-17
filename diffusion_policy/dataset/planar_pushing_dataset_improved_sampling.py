@@ -1,9 +1,11 @@
 import copy
 import math
 import os
+import random
 import time
 from typing import Dict
 
+import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -14,26 +16,8 @@ from diffusion_policy.common.normalize_util import get_image_range_normalizer
 from diffusion_policy.common.pytorch_util import dict_apply
 from diffusion_policy.common.replay_buffer import ReplayBuffer
 from diffusion_policy.common.sampler import ImprovedDatasetSampler, downsample_mask, get_val_mask
-from diffusion_policy.dataset.base_dataset import BaseImageDataset
+from diffusion_policy.dataset.base_dataset import BaseImageDataset, gaussian_kernel, low_pass_filter
 from diffusion_policy.model.common.normalizer import LinearNormalizer
-
-
-def gaussian_kernel(kernel_size=9, sigma=3, channels=3):
-    """Create a Gaussian kernel for convolution."""
-    # Create 1D Gaussian
-    coords = torch.arange(kernel_size).float() - (kernel_size - 1) / 2.0
-    g = torch.exp(-(coords**2) / (2 * sigma**2))
-    g = g / g.sum()
-    # Create 2D Gaussian
-    g2 = g[:, None] * g[None, :]
-    kernel = g2.expand(channels, 1, kernel_size, kernel_size)
-    return kernel
-
-
-def low_pass_filter(x, kernel):
-    """Apply low-pass (Gaussian blur) filter to input tensor x."""
-    padding = kernel.shape[-1] // 2
-    return F.conv2d(x, kernel, padding=padding, groups=x.shape[1])
 
 
 class PlanarPushingDataset(BaseImageDataset):
@@ -330,11 +314,6 @@ class PlanarPushingDataset(BaseImageDataset):
         if num_null_sampling_weights not in [0, N]:
             raise ValueError("Either all or none of the zarr_configs must have a sampling_weight")
 
-    def _normalize_sample_probabilities(self, sample_probabilities):
-        total = np.sum(sample_probabilities)
-        assert total > 0, "Sum of sampling weights must be greater than 0"
-        return sample_probabilities / total
-
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         # To sample a sequence, first sample a dataset,
         # then sample a sequence from that dataset
@@ -432,11 +411,16 @@ def prune_idle_actions(dataset, new_dataset_name, idle_tolerance=0.001):
     Individual idle frames are removed from episodes. Episodes that are entirely
     idle (all frames are idle) are removed completely from the dataset.
 
+    A frame is classified as "idle" if it belongs to a sliding window of consecutive
+    actions (of size n_obs_steps + 1) where all actions in that window fall within
+    a small circle of radius `idle_tolerance`.
+
     Args:
         dataset: PlanarPushingDataset object.
         new_dataset_name: Name for the new pruned dataset (will be saved at the same
                           location as original with this name).
-        idle_tolerance: Maximum radius for actions to be considered idle.
+        idle_tolerance: Maximum radius such that if actions all fall into a circle
+                        of this radius, the episode is considered idle.
     """
     n_obs_steps = dataset.n_obs_steps
 
@@ -552,10 +536,6 @@ def prune_idle_actions(dataset, new_dataset_name, idle_tolerance=0.001):
 
 
 if __name__ == "__main__":
-    import random
-
-    import cv2
-
     shape_meta = {
         "action": {"shape": [2]},
         "obs": {
@@ -629,8 +609,8 @@ if __name__ == "__main__":
     # Test normalizer
     normalizer = dataset.get_normalizer()
 
-    dataset = prune_idle_actions(dataset, new_dataset_name="sim_sim_tee_data_carbon_large_pruned.zarr")
-    exit()
+    # dataset = prune_idle_actions(dataset, new_dataset_name="sim_sim_tee_data_carbon_large_pruned.zarr")
+    # exit()
 
     for i in range(10):
         idx = random.randint(0, len(dataset) - 1)
@@ -639,6 +619,8 @@ if __name__ == "__main__":
         sample = dataset[idx]
         states = sample["obs"]["agent_pos"]
         actions = sample["action"]
+
+        print(sample["obs"].keys())
 
         print(f"Sample states : {states}")
         print(f"Sample actions: {actions}")
