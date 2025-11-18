@@ -20,13 +20,15 @@ DATE=`date +"%Y.%m.%d"`
 TIME=`date +"%H.%M.%S"`
 export cHYDRA_FULL_ERROR=1
 
-echo "[submit_training.sh] Running training code..."
-echo "[submit_training.sh] Date: $DATE"
-echo "[submit_training.sh] Time: $TIME"
-
 CONFIG_DIR=config/planar_pushing
 CONFIG_NAME=2_obs.yaml
 HYDRA_RUN_DIR=data/outputs/planar_pushing/2_obs
+
+echo "[submit_training.sh] Config name: $CONFIG_NAME"
+echo "[submit_training.sh] Hydra run dir: $HYDRA_RUN_DIR"
+echo "[submit_training.sh] Running training code..."
+echo "[submit_training.sh] Date: $DATE"
+echo "[submit_training.sh] Time: $TIME"
 
 python train.py --config-dir=$CONFIG_DIR --config-name=$CONFIG_NAME \
 	hydra.run.dir=$HYDRA_RUN_DIR

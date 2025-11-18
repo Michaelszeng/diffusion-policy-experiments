@@ -48,8 +48,8 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         eval_fixed_crop=False,
         num_DDPM_inference_steps=100,
         num_DDIM_inference_steps=10,
-        pretrained_obs_encoder=False,
-        freeze_pretrained_obs_encoder=False,
+        pretrained_encoder=False,
+        freeze_pretrained_encoder=False,
         self_trained_obs_encoder=None,
         freeze_self_trained_obs_encoder=False,
         inference_loading=False,
@@ -96,8 +96,8 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
             hdf5_type="image",
             task_name="square",
             dataset_type="ph",
-            pretrained_obs_encoder=pretrained_obs_encoder,
-            freeze_pretrained_obs_encoder=freeze_pretrained_obs_encoder,
+            pretrained_encoder=pretrained_encoder,
+            freeze_pretrained_encoder=freeze_pretrained_encoder,
         )
 
         with config.unlocked():
@@ -244,7 +244,10 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         self.n_obs_steps = n_obs_steps
         self.one_hot_encoding_dim = one_hot_encoding_dim
         self.use_target_cond = use_target_cond
-        self.kwargs = kwargs
+        # Filter kwargs to only include valid scheduler.step() parameters
+        # Remove policy-specific parameters that were already consumed
+        scheduler_params = {'eta', 'use_clipped_model_output', 'variance_noise'}
+        self.kwargs = {k: v for k, v in kwargs.items() if k in scheduler_params}
 
         print("Diffusion params: %e" % sum(p.numel() for p in self.model.parameters()))
         print("Vision params: %e" % sum(p.numel() for p in self.obs_encoder.parameters()))

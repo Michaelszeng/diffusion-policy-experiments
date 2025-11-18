@@ -47,7 +47,7 @@ multi_run:
 horizon: 16
 n_action_steps: 8  # Inference-only parameter
 n_latency_steps: 0  # How many timesteps to offset the action predictions back by to account for inference time/latency
-n_obs_steps: 2  # Number of observation steps to condition on
+n_obs_steps: 10  # Number of observation steps to condition on
 shape_meta:
   action:
     shape:
@@ -102,8 +102,8 @@ policy:  # Parameters to be passed to policy (i.e. the _target_ policy class bel
   use_target_cond: true
   target_dim: 3  # 3 dims for 2D pose of T
   shape_meta: ${shape_meta}
-  pretrained_obs_encoder: false
-  self_trained_obs_encoder: "/home/michzeng/diffusion-policy/data/outputs/planar_pushing/2_obs_idle_frames_pruned/checkpoints/epoch=240-val_loss=0.0844-val_ddim_mse=0.000370.ckpt"  # For long context, we use a (frozen) pretrained obs encoder from short context
+  pretrained_encoder: false
+  self_trained_obs_encoder: "/home/gridsan/mzeng/diffusion-policy-experiments/data/outputs/planar_pushing/2_obs_idle_frames_pruned/checkpoints/epoch=110-val_loss=0.0449-val_ddim_mse=0.000351.ckpt"  # For long context, we use a (frozen) pretrained obs encoder from short context
   freeze_self_trained_obs_encoder: true
   inference_loading: false
 task:

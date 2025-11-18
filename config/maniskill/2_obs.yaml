@@ -99,7 +99,7 @@ policy:  # Parameters to be passed to policy (i.e. the _target_ policy class bel
   obs_encoder_group_norm: true
   use_target_cond: false  # Maniskill tasks may not have explicit targets
   shape_meta: ${shape_meta}
-  pretrained_obs_encoder: false
+  pretrained_encoder: false
   inference_loading: false
 task:
   dataset:
