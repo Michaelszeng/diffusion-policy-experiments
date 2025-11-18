@@ -16,6 +16,7 @@ from diffusion_policy.workspace.base_workspace import BaseWorkspace
 
 # Set HYDRA_FULL_ERROR=1 for detailed error reporting
 os.environ["HYDRA_FULL_ERROR"] = "1"
+os.environ["WANDB_START_METHOD"] = "thread"
 
 # use line-buffering for both stdout and stderr
 sys.stdout = open(sys.stdout.fileno(), mode="w", buffering=1)
