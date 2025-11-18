@@ -1,13 +1,13 @@
 #!/bin/bash
 
 # Source directory on your computer
-SOURCE_DIR="data/outputs/planar_pushing/2_obs"
+SOURCE_DIR="data/outputs/planar_pushing/6_obs"
 
 # Target directory on the target computer
 TARGET_USER="mzeng"
 
 TARGET_HOST="txe1-login.mit.edu"
-TARGET_DIR="/home/gridsan/mzeng/diffusion-policy-experiments/data/outputs/planar_pushing/2_obs/checkpoints"
+TARGET_DIR="/home/gridsan/mzeng/diffusion-policy-experiments/data/outputs/planar_pushing"
 
 # Rsync command with -avh flags
 mkdir -p "$SOURCE_DIR"

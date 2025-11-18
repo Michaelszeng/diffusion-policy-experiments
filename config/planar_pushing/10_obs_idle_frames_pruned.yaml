@@ -1,4 +1,5 @@
 _target_: diffusion_policy.workspace.train_diffusion_unet_hybrid_workspace_no_env.TrainDiffusionUnetHybridWorkspaceNoEnv
+seed: 42
 checkpoint:
   # - save_last_ckpt: true
   #   save_last_snapshot: false
@@ -83,9 +84,9 @@ policy:  # Parameters to be passed to policy (i.e. the _target_ policy class bel
   eval_fixed_crop: true  # fix image cropping during evaluation
   kernel_size: 5  # kernel size (in time-dimension) for 1D convolutions in UNet
   n_groups: 8  # Number of groups for group norm
-  horizon: 16
-  n_action_steps: 8
-  n_obs_steps: 2
+  horizon: ${horizon}
+  n_action_steps: ${n_action_steps}
+  n_obs_steps: ${n_obs_steps}
   past_action_visible: false  # explicitely condition on past actions
   DDPM_noise_scheduler:
     _target_: diffusers.schedulers.scheduling_ddpm.DDPMScheduler
@@ -110,14 +111,14 @@ task:
   dataset:
     _target_: diffusion_policy.dataset.planar_pushing_dataset_improved_sampling.PlanarPushingDataset
     shape_meta: ${shape_meta}
-    horizon: 16
-    n_obs_steps: 2
+    horizon: ${horizon}
+    n_obs_steps: ${n_obs_steps}
     # We pad before and after the training episode to maximize data usage.
     # Padding before repeats the first observation pad_before times so that the policy can start predicting actions right at the episode's start.
     # Padding after just allows the policy to predict actions past the end of the episode (in this case, loss is measured against the final action repeated pad_after times).
     pad_after: ${eval:${policy.n_action_steps} - 1}
     pad_before: ${eval:${task.dataset.n_obs_steps} - 1}
-    seed: 42
+    seed: ${seed}
     zarr_configs:
     - path: data/diffusion_experiments/planar_pushing/sim_sim_tee_data_carbon_large_pruned.zarr
       max_train_episodes: 160
@@ -140,7 +141,7 @@ training:
   resume: false
   rollout_every: 5  # UNUSED -- no environment rollouts during training
   sample_every: ${training.checkpoint_every}  # validation using DDPM output
-  seed: 42
+  seed: ${seed}
   tqdm_interval_sec: 30.0
   use_ema: true
   val_every: 1

@@ -208,6 +208,7 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
                 obs_encoder.load_state_dict(obs_encoder_state_dict, strict=True)
 
                 if freeze_self_trained_obs_encoder:
+                    print("Freezing obs encoder parameters.")
                     for param in obs_encoder.parameters():
                         param.requires_grad = False
 
