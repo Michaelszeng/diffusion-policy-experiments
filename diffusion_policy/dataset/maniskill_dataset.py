@@ -16,6 +16,11 @@ from diffusion_policy.common.sampler import ImprovedDatasetSampler, downsample_m
 from diffusion_policy.dataset.base_dataset import BaseImageDataset, gaussian_kernel, low_pass_filter
 from diffusion_policy.model.common.normalizer import LinearNormalizer
 
+try:
+    import matplotlib.pyplot as plt
+except ImportError:
+    plt = None
+
 
 class ManiskillDataset(BaseImageDataset):
     """
@@ -177,7 +182,7 @@ class ManiskillDataset(BaseImageDataset):
             traj_keys = [key for key in h5_file.keys() if key.startswith("traj_")]
             traj_keys = sorted(traj_keys, key=lambda x: int(x.split("_")[1]))  # Sort by episode ID
 
-            print(f"Found {len(traj_keys)} trajectories")
+            print(f"Found {len(traj_keys)} episodes.")
 
             for traj_key in traj_keys:
                 traj = h5_file[traj_key]
@@ -377,10 +382,8 @@ class ManiskillDataset(BaseImageDataset):
         # Follow the same approach as planar_pushing_dataset_improved_sampling.py
         torch_data = dict_apply(data, torch.from_numpy)
 
-        # Normalize RGB images to [0, 1] range
-        for key in self.rgb_keys:
-            if key in torch_data["obs"]:
-                torch_data["obs"][key] = torch_data["obs"][key].float() / 255.0
+        # NOTE: Don't normalize images here - the training workspace handles normalization
+        # Images should remain as uint8 [0, 255] at this stage
 
         # Handle one-hot encoding if enabled
         if self.use_one_hot_encoding:
@@ -481,5 +484,60 @@ if __name__ == "__main__":
     normalizer = dataset.get_normalizer()
     print("Normalizer created successfully!")
     print(f"Normalizer type: {type(normalizer)}")
+
+    # Visualize RGB images and print obs and actions for a few samples
+    print("\n" + "=" * 60)
+    print("VISUALIZING RGB IMAGES")
+    print("=" * 60)
+
+    # Sample a few episodes
+    num_samples = min(3, len(dataset))
+    fig_width = 5 * len(dataset.rgb_keys)
+    fig_height = 4 * num_samples
+    fig, axes = plt.subplots(num_samples, len(dataset.rgb_keys), figsize=(fig_width, fig_height))
+
+    # Handle single row case
+    if num_samples == 1:
+        axes = axes.reshape(1, -1)
+    # Handle single column case
+    if len(dataset.rgb_keys) == 1:
+        axes = axes.reshape(-1, 1)
+
+    for i in range(num_samples):
+        sample = dataset[i * (len(dataset) // num_samples)]
+
+        print(f"Sample states  ({sample['obs']['agent_pos'].shape}): {sample['obs']['agent_pos']}")
+        print(f"Sample actions: ({sample['action'].shape}): {sample['action']}")
+
+        for j, rgb_key in enumerate(dataset.rgb_keys):
+            # Get the first observation timestep
+            img = sample["obs"][rgb_key][0]  # First timestep
+
+            # Check the shape and convert to [H, W, C] for matplotlib
+            if img.shape[0] == 3:  # [C, H, W] format
+                img_np = img.permute(1, 2, 0).numpy()
+            elif img.shape[1] == 3:  # [H, C, W] format
+                img_np = img.permute(0, 2, 1).numpy()
+            else:  # [H, W, C] format
+                img_np = img.numpy()
+
+            # Normalize to [0, 1] for display if uint8
+            if img_np.dtype == np.uint8:
+                img_np = img_np.astype(np.float32) / 255.0
+
+            # Display image
+            axes[i, j].imshow(img_np)
+            axes[i, j].set_title(f"Sample {i} - {rgb_key}")
+            axes[i, j].axis("off")
+
+    plt.tight_layout()
+    plt.savefig("maniskill_dataset_samples.png", dpi=150, bbox_inches="tight")
+    print("✓ Saved visualization to: maniskill_dataset_samples.png")
+    print(f"  Displaying {num_samples} samples with {len(dataset.rgb_keys)} camera(s) each")
+
+    try:
+        plt.show()
+    except Exception as e:
+        print(f"  (Could not display interactively: {e})")
 
     print("\n✓ ManiSkill dataset successfully loaded and tested!")
