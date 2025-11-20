@@ -49,7 +49,7 @@ Obtain `sim_sim_tee_data_carbon_large.zarr` from Adam Wei. Place in `data/diffus
 
 ## Running
 
-### Running locally
+### Running locally:
 ```bash
 python train.py --config-dir=config/planar_pushing --config-name=2_obs.yaml hydra.run.dir=data/outputs/planar_pushing/2_obs/
 ```
@@ -65,6 +65,11 @@ python train.py --config-dir=config/planar_pushing --config-name=2_obs.yaml hydr
 # Non-interactively:
 LLsub ./submit_training.sh -s 20 -g volta:1
 ```
+
+### Resuming Training:
+
+In your config file, set `training.resume: true`. Optionally (recommended), also set `logging.resume: true` and set `logging.id` to the wandb ID that you want to continue from (i.e. "thfb8nrq" for training run `data/outputs/maniskill/2_obs/wandb/offline-run-20251118_134543-thfb8nrq`).
+
 
 Remember to also obtain and `desktop_to_supercloud.sh` (if running on Supercloud) the dataset files.
 
