@@ -124,8 +124,8 @@ task:
     h5_configs:
     # - h5_path: /home/michzeng/.maniskill/demos/PushT-v1/rl/trajectory.rgb.pd_ee_delta_pos.physx_cuda.h5  # RGB ManiSkill dataset
     #   json_path: /home/michzeng/.maniskill/demos/PushT-v1/rl/trajectory.rgb.pd_ee_delta_pos.physx_cuda.json  # JSON metadata
-    - h5_path: /home/gridsan/mzeng/.maniskill/demos/PushT-v1/rl/trajectory.rgb.pd_ee_delta_pos.physx_cuda.h5  # RGB ManiSkill dataset
-      json_path: /home/gridsan/mzeng/.maniskill/demos/PushT-v1/rl/trajectory.rgb.pd_ee_delta_pos.physx_cuda.json  # JSON metadata/
+    - h5_path: ~/.maniskill/demos/PushT-v1/rl/trajectory.rgb.pd_ee_delta_pos.physx_cuda.h5  # RGB ManiSkill dataset
+      json_path: ~/.maniskill/demos/PushT-v1/rl/trajectory.rgb.pd_ee_delta_pos.physx_cuda.json  # JSON metadata/
       max_train_episodes: null  # Set to desired number of training episodes (null = use all)
       sampling_weight: null  # Relative sampling weight (null = proportional to number of episodes)
       val_ratio: 0.1  # 10% for validation

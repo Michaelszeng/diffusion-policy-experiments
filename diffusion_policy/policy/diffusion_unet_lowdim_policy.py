@@ -69,7 +69,10 @@ class DiffusionUnetLowdimPolicy(BaseLowdimPolicy):
         self.DDPM_noise_scheduler = noise_scheduler
 
         # Create DDIM scheduler with same config as DDPM
-        self.DDIM_noise_scheduler = DDIMScheduler(**noise_scheduler.config)
+        # Filter out parameters that are not valid for DDIMScheduler
+        ddim_config = dict(noise_scheduler.config)
+        ddim_config.pop('variance_type', None)  # variance_type is only for DDPM
+        self.DDIM_noise_scheduler = DDIMScheduler(**ddim_config)
 
         self.mask_generator = LowdimMaskGenerator(
             action_dim=action_dim,

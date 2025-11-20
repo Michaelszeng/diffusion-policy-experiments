@@ -83,7 +83,7 @@ class BinaryTaskDataset(BaseImageDataset):
 
         for i, zarr_config in enumerate(zarr_configs):
             # Extract config info
-            zarr_path = zarr_config["path"]
+            zarr_path = os.path.expanduser(zarr_config["path"])
             max_train_episodes = zarr_config.get("max_train_episodes", None)
             # sampling_weight = zarr_config.get('sampling_weight', None)
 
@@ -294,7 +294,7 @@ class BinaryTaskDataset(BaseImageDataset):
         N = len(zarr_configs)
 
         for zarr_config in zarr_configs:
-            zarr_path = zarr_config["path"]
+            zarr_path = os.path.expanduser(zarr_config["path"])
             if not os.path.exists(zarr_path):
                 raise ValueError(f"path {zarr_path} does not exist")
 

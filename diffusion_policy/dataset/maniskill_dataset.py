@@ -109,7 +109,7 @@ class ManiskillDataset(BaseImageDataset):
 
         for i, h5_config in enumerate(h5_configs):
             # Extract config info
-            h5_path = h5_config["h5_path"]
+            h5_path = os.path.expanduser(h5_config["h5_path"])
             max_train_episodes = h5_config.get("max_train_episodes", None)
             sampling_weight = h5_config.get("sampling_weight", None)
 
@@ -329,7 +329,7 @@ class ManiskillDataset(BaseImageDataset):
         N = len(h5_configs)
 
         for h5_config in h5_configs:
-            h5_path = h5_config["h5_path"]
+            h5_path = os.path.expanduser(h5_config["h5_path"])
             if not os.path.exists(h5_path):
                 raise ValueError(f"H5 file path {h5_path} does not exist")
 

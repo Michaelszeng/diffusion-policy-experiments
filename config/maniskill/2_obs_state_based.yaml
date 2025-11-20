@@ -110,8 +110,8 @@ task:
     # - qpos: shape=[7] (joint positions only)
     # - tcp_pose: shape=[7] (end-effector pose)
     h5_configs:
-    - h5_path: /home/michzeng/.maniskill/demos/PushT-v1/rl/trajectory_state_pd_ee_delta_pos_truncated_success_only.h5  # ManiSkill dataset
-      json_path: /home/michzeng/.maniskill/demos/PushT-v1/rl/trajectory_state_pd_ee_delta_pos_truncated_success_only.json  # JSON metadata
+    - h5_path: ~/.maniskill/demos/PushT-v1/rl/trajectory_state_pd_ee_delta_pos_truncated_success_only.h5  # ManiSkill dataset
+      json_path: ~/.maniskill/demos/PushT-v1/rl/trajectory_state_pd_ee_delta_pos_truncated_success_only.json  # JSON metadata
       max_train_episodes: null  # Set to desired number of training episodes (null = use all)
       sampling_weight: null  # Relative sampling weight (null = proportional to number of episodes)
       val_ratio: 0.0625  # 1/16% for validation

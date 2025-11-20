@@ -25,8 +25,8 @@ export cHYDRA_FULL_ERROR=1
 # HYDRA_RUN_DIR=data/outputs/planar_pushing/2_obs
 
 CONFIG_DIR=config/maniskill
-CONFIG_NAME=2_obs.yaml
-HYDRA_RUN_DIR=data/outputs/maniskill/2_obs
+CONFIG_NAME=2_obs_state_based.yaml
+HYDRA_RUN_DIR=data/outputs/maniskill/2_obs_state_based
 
 echo "[submit_training.sh] Config name: $CONFIG_NAME"
 echo "[submit_training.sh] Hydra run dir: $HYDRA_RUN_DIR"
