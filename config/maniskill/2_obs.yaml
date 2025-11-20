@@ -41,7 +41,7 @@ logging:  # wandb logging configuration
   id: null
   name: 2_obs
   project: maniskill_diffusion
-  resume: true
+  resume: false
 multi_run:
   wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_hybrid_maniskill
   run_dir: data/outputs/${multi_run.wandb_name_base}

@@ -214,6 +214,10 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
         wandb_run = wandb.init(
             dir=str(self.output_dir),
             config=OmegaConf.to_container(cfg, resolve=True),
+            settings=wandb.Settings(
+                start_method="thread",
+                _disable_stats=True,  # Don't log stuff like CPU, GPU, system memory, etc. just to reduce data amount
+            ),
             **cfg.logging,
         )
         wandb.config.update(
