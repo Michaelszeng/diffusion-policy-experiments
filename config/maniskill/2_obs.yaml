@@ -52,7 +52,7 @@ n_obs_steps: 2  # Number of observation steps to condition on
 shape_meta:
   action:
     shape:
-    - 7  # 7-DOF robot arm action from ManiSkill inspection
+    - 3  # 3-DOF end-effector control (pd_ee_delta_pos) for PushT
   obs:
     agent_pos:
       # IMPORTANT: Shape depends on state_mode setting below!
@@ -122,8 +122,10 @@ task:
     camera_keys:
       - "base_camera"  # Extract RGB images from obs/sensor_data/base_camera/rgb
     h5_configs:
-    - h5_path: /home/michzeng/.maniskill/demos/PushT-v1/rl/trajectory.rgb.pd_joint_delta_pos.physx_cuda.h5  # RGB ManiSkill dataset
-      json_path: /home/michzeng/.maniskill/demos/PushT-v1/rl/trajectory.rgb.pd_joint_delta_pos.physx_cuda.json  # JSON metadata
+    # - h5_path: /home/michzeng/.maniskill/demos/PushT-v1/rl/trajectory.rgb.pd_ee_delta_pos.physx_cuda.h5  # RGB ManiSkill dataset
+    #   json_path: /home/michzeng/.maniskill/demos/PushT-v1/rl/trajectory.rgb.pd_ee_delta_pos.physx_cuda.json  # JSON metadata
+    - h5_path: /home/gridsan/mzeng/.maniskill/demos/PushT-v1/rl/trajectory.rgb.pd_ee_delta_pos.physx_cuda.h5  # RGB ManiSkill dataset
+      json_path: /home/gridsan/mzeng/.maniskill/demos/PushT-v1/rl/trajectory.rgb.pd_ee_delta_pos.physx_cuda.json  # JSON metadata
       max_train_episodes: null  # Set to desired number of training episodes (null = use all)
       sampling_weight: null  # Relative sampling weight (null = proportional to number of episodes)
       val_ratio: 0.1  # 10% for validation
@@ -139,7 +141,7 @@ training:
   lr_warmup_steps: 500
   max_train_steps: null  # per epoch training steps
   max_val_steps: null
-  total_train_steps: 104600
+  total_train_steps: 1046000
   num_epochs: null # 70 for 50, 2000; 200 for 50, 500
   resume: false
   rollout_every: 5  # UNUSED -- no environment rollouts during training
