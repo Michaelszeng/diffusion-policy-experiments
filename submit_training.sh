@@ -20,13 +20,24 @@ DATE=`date +"%Y.%m.%d"`
 TIME=`date +"%H.%M.%S"`
 export cHYDRA_FULL_ERROR=1
 
-# CONFIG_DIR=config/planar_pushing
-# CONFIG_NAME=2_obs.yaml
-# HYDRA_RUN_DIR=data/outputs/planar_pushing/2_obs
+EXPERIMENT_NAME=2_obs
 
-CONFIG_DIR=config/maniskill
-CONFIG_NAME=2_obs_state_based.yaml
-HYDRA_RUN_DIR=data/outputs/maniskill/2_obs_state_based
+# EXPERIMENT_NAME=6_obs
+# EXPERIMENT_NAME=10_obs
+# EXPERIMENT_NAME=14_obs
+# EXPERIMENT_NAME=18_obs
+# EXPERIMENT_NAME=6_obs_idle_frames_pruned
+# EXPERIMENT_NAME=10_obs_idle_frames_pruned
+# EXPERIMENT_NAME=14_obs_idle_frames_pruned
+# EXPERIMENT_NAME=18_obs_idle_frames_pruned
+
+CONFIG_DIR=config/planar_pushing
+CONFIG_NAME=${EXPERIMENT_NAME}.yaml
+HYDRA_RUN_DIR=data/outputs/planar_pushing/${EXPERIMENT_NAME}
+
+# CONFIG_DIR=config/maniskill
+# CONFIG_NAME=2_obs_state_based.yaml
+# HYDRA_RUN_DIR=data/outputs/maniskill/2_obs_state_based
 
 echo "[submit_training.sh] Config name: $CONFIG_NAME"
 echo "[submit_training.sh] Hydra run dir: $HYDRA_RUN_DIR"
