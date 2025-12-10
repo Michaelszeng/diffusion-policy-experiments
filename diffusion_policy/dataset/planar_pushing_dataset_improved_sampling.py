@@ -545,16 +545,9 @@ if __name__ == "__main__":
         },
     }
     zarr_configs = [
-        # {
-        #     'path': 'data/planar_pushing/underactuated_data.zarr',
-        #     'max_train_episodes': None,
-        #     'sampling_weight': 1.0
-        # },
         {
-            # 'path': 'data/planar_pushing_cotrain/visual_mean_shift/visual_mean_shift_level_2.zarr',
-            # "path": "data/planar_pushing_cotrain/sim_sim_tee_data_carbon_large.zarr",
             "path": "data/diffusion_experiments/planar_pushing/sim_sim_tee_data_carbon_large.zarr",
-            "max_train_episodes": None,
+            "max_train_episodes": 160,
             "sampling_weight": 1.0,
         }
     ]
@@ -582,11 +575,10 @@ if __name__ == "__main__":
     dataset.__getitem__(0)
     print("=" * 60)
     print("DATASET SIZE INFORMATION")
-    print("=" * 60)
     print("Initialized dataset")
     print(f"Number of datasets: {dataset.get_num_datasets()}")
     print(f"Total episodes (train + val): {dataset.get_num_episodes()}")
-    print(f"Training dataset length: {len(dataset)}")
+    print(f"Training dataset length (after applying max_train_episodes) (number of training samples): {len(dataset)}")
 
     # Print detailed information for each dataset
     for i in range(dataset.get_num_datasets()):

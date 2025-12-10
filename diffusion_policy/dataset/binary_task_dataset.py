@@ -383,7 +383,7 @@ if __name__ == "__main__":
     dataset.__getitem__(0)
     print("Initialized dataset")
     print("Total episodes (train + val):", dataset.get_num_episodes())
-    print("Training dataset length:", len(dataset))
+    print("Training dataset length (after applying max_train_episodes) (number of training samples):", len(dataset))
 
     # Test get validation dataset
     for i in range(dataset.get_num_datasets()):

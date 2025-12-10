@@ -20,7 +20,11 @@ class ManiskillLowdimDataset(BaseLowdimDataset):
     ROBOT-ACCESSIBLE DATA (What we extract):
     - Robot state based on state_mode (qpos, qvel, or tcp_pose)
     - Tee pose: env_states.actors.Tee[:7] = [pos (3), quat (4)]
-    - Actions: actions (T, action_dim)
+    - Actions: actions (T, action_dim) - control commands (task-dependent)
+      * 2D for planar tasks (e.g., Planar-PushT with pd_ee_delta_pose)
+      * 3D for 3D end-effector control
+      * 7D for full manipulation (e.g., joint control tasks)
+      * Actions are clipped to [-1, 1] by default to ensure bounded output space
 
     ROBOT STATE MODES:
     - "qpos_qvel": Joint positions + velocities (T, 14) [DEFAULT]
@@ -31,6 +35,8 @@ class ManiskillLowdimDataset(BaseLowdimDataset):
     Supports two types of H5 structure:
     1. Nested: traj["obs"]["agent"]["qpos"], traj["obs"]["agent"]["qvel"]
     2. Flat: traj["obs"] as flat array with configurable slices
+
+    NOTE: Action dimension is automatically detected from the H5 file and can vary by task.
     """
 
     def __init__(
@@ -50,6 +56,8 @@ class ManiskillLowdimDataset(BaseLowdimDataset):
         qvel_slice: tuple = (7, 14),  # Default: obs[:, 7:14]
         tee_pose_slice: tuple = (14, 21),  # Default: obs[:, 14:21]
         tcp_pose_slice: tuple = None,  # If using tcp_pose mode with flat obs
+        clip_actions: bool = True,  # Clip actions to [-1, 1] range
+        action_clip_range: tuple = (-1.0, 1.0),  # Min and max values for action clipping
     ):
         super().__init__()
         self._validate_h5_configs(h5_configs)
@@ -70,6 +78,10 @@ class ManiskillLowdimDataset(BaseLowdimDataset):
         self.qvel_slice = qvel_slice
         self.tee_pose_slice = tee_pose_slice
         self.tcp_pose_slice = tcp_pose_slice
+
+        # Store action clipping parameters
+        self.clip_actions = clip_actions
+        self.action_clip_range = action_clip_range
 
         # Keys for replay buffer: state, tee_pose, action
         keys = ["state", "tee_pose", "action"]
@@ -157,7 +169,13 @@ class ManiskillLowdimDataset(BaseLowdimDataset):
                 # Actions: (T, action_dim)
                 actions = traj["actions"][:]
                 episode_length = len(actions)
-                episode_data["action"] = actions.astype(np.float32)
+                actions = actions.astype(np.float32)
+
+                # Clip actions to specified range (default: [-1, 1])
+                if self.clip_actions:
+                    actions = np.clip(actions, self.action_clip_range[0], self.action_clip_range[1])
+
+                episode_data["action"] = actions
 
                 # Robot state extraction based on mode
                 episode_data["state"] = self._extract_robot_state(traj, episode_length)
@@ -382,22 +400,43 @@ class ManiskillLowdimDataset(BaseLowdimDataset):
 
 
 if __name__ == "__main__":
-    # Example usage and testing
-    # NOTE: shape_meta must match state_mode!
+    # Example usage and testing for PLANAR PUSH-T task
+    # NOTE: shape_meta must match state_mode and action space!
 
-    # For qpos_qvel mode (default):
+    # For planar push-T with 2D end-effector actions and qpos_qvel state:
     shape_meta = {
-        "action": {"shape": [3]},  # 3-DOF end-effector control for PushT
+        "action": {"shape": [2]},  # 2D end-effector coordinates for planar task
         "obs": {
             "agent_pos": {"type": "low_dim", "shape": [14]},  # qpos + qvel (7 + 7)
             "tee_pose": {"type": "low_dim", "shape": [7]},  # Tee position + quaternion
         },
     }
 
+    # Alternative configurations:
+
+    # For 3D end-effector control:
+    # shape_meta = {
+    #     "action": {"shape": [3]},  # 3D end-effector control
+    #     "obs": {
+    #         "agent_pos": {"type": "low_dim", "shape": [14]},  # qpos + qvel (7 + 7)
+    #         "tee_pose": {"type": "low_dim", "shape": [7]},
+    #     },
+    # }
+
+    # For 7-DOF joint control:
+    # shape_meta = {
+    #     "action": {"shape": [7]},  # 7-DOF robot arm joint commands
+    #     "obs": {
+    #         "agent_pos": {"type": "low_dim", "shape": [14]},  # qpos + qvel (7 + 7)
+    #         "tee_pose": {"type": "low_dim", "shape": [7]},
+    #     },
+    # }
+
     h5_configs = [
         {
             "h5_path": (
-                "/home/michzeng/.maniskill/demos/PushT-v1/rl/trajectory_state_pd_ee_delta_pos_truncated_success_only.h5"
+                "/home/michzeng/ManiSkill/runs/Planar-PushT-v1__ppo_fast__1__1765298439/test_videos/"
+                "trajectory.state.pd_ee_delta_pose.physx_cuda.h5"
             ),
             "max_train_episodes": None,
             "sampling_weight": 1.0,
@@ -421,6 +460,8 @@ if __name__ == "__main__":
         seed=42,
         val_ratio=0.1,
         state_mode="qpos_qvel",
+        clip_actions=True,  # Clip actions to [-1, 1]
+        action_clip_range=(-1.0, 1.0),  # Action clipping range
         # Uncomment to override slicing (if needed):
         # qpos_slice=(0, 7),
         # qvel_slice=(7, 14),
@@ -433,7 +474,7 @@ if __name__ == "__main__":
     print("Dataset initialized successfully!")
     print(f"Number of datasets: {dataset.get_num_datasets()}")
     print(f"Total episodes (train + val): {dataset.get_num_episodes()}")
-    print(f"Training dataset length: {len(dataset)}")
+    print(f"Training dataset length (after applying max_train_episodes) (number of training samples): {len(dataset)}")
 
     # Print detailed information
     for i in range(dataset.get_num_datasets()):
