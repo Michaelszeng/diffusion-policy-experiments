@@ -1,14 +1,14 @@
 _target_: diffusion_policy.workspace.train_diffusion_unet_lowdim_workspace_no_env.TrainDiffusionUnetLowdimWorkspaceNoEnv
 seed: 42
 checkpoint:
-  # - save_last_ckpt: true
+  # - save_last_ckpt: false
   #   save_last_snapshot: false
   #   topk:  # Save top k checkpoints
   #     format_str: epoch={epoch:03d}-val_loss={val_loss:.4f}-val_ddim_mse={val_ddim_mse:.6f}.ckpt
   #     k: 0
   #     mode: min
   #     monitor_key: val_loss_0
-  - save_last_ckpt: true
+  - save_last_ckpt: false
     save_last_snapshot: false
     topk:  # Save top k checkpoints
       format_str: epoch={epoch:03d}-val_loss={val_loss:.4f}-val_ddim_mse={val_ddim_mse:.6f}.ckpt
