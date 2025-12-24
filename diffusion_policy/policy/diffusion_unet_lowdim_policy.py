@@ -1,3 +1,7 @@
+"""
+NOT WELL TESTED.
+"""
+
 from typing import Dict
 
 import torch
@@ -71,7 +75,7 @@ class DiffusionUnetLowdimPolicy(BaseLowdimPolicy):
         # Create DDIM scheduler with same config as DDPM
         # Filter out parameters that are not valid for DDIMScheduler
         ddim_config = dict(noise_scheduler.config)
-        ddim_config.pop('variance_type', None)  # variance_type is only for DDPM
+        ddim_config.pop("variance_type", None)  # variance_type is only for DDPM
         self.DDIM_noise_scheduler = DDIMScheduler(**ddim_config)
 
         self.mask_generator = LowdimMaskGenerator(

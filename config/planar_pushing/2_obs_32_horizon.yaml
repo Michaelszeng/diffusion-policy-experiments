@@ -1,4 +1,4 @@
-_target_: diffusion_policy.workspace.train_diffusion_unet_lowdim_workspace_no_env.TrainDiffusionUnetLowdimWorkspaceNoEnv
+_target_: diffusion_policy.workspace.train_diffusion_unet_hybrid_workspace_no_env.TrainDiffusionUnetHybridWorkspaceNoEnv
 seed: 42
 checkpoint:
   # - save_last_ckpt: true
@@ -12,9 +12,9 @@ checkpoint:
     save_last_snapshot: false
     topk:  # Save top k checkpoints
       format_str: epoch={epoch:03d}-val_loss={val_loss:.4f}-val_ddim_mse={val_ddim_mse:.6f}.ckpt
-      k: 7
+      k: 15
       mode: min
-      monitor_key: val_ddim_mse
+      monitor_key: val_ddim_mse_0
 dataloader:
   batch_size: 64
   num_workers: 8
@@ -39,62 +39,75 @@ exp_name: defaults
 logging:  # wandb logging configuration
   group: null
   id: null
-  name: 2_obs_state_based
-  project: maniskill_diffusion
-  resume: false
+  name: 2_obs_32_horizon
+  project: t_pushing
+  resume: true
 multi_run:
-  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_lowdim_workspace_no_env_maniskill_state_based
+  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_hybrid_pusher
   run_dir: data/outputs/${multi_run.wandb_name_base}
-horizon: 16
+horizon: 32
 n_action_steps: 8  # Inference-only parameter
 n_latency_steps: 0  # How many timesteps to offset the action predictions back by to account for inference time/latency
 n_obs_steps: 2  # Number of observation steps to condition on
 shape_meta:
   action:
     shape:
-    - 3  # 3-DOF end-effector control (pd_ee_delta_pos) for PushT
+    - 2
   obs:
     agent_pos:
-      # IMPORTANT: Shape depends on state_mode setting below!
-      # - qpos_qvel: [14] (joint positions + velocities: 7 + 7)
-      # - qpos: [7] (joint positions only)  
-      # - tcp_pose: [7] (end-effector pose: position + quaternion)
       shape:
-      - 14  # Currently configured for qpos_qvel mode
+      - 3
       type: low_dim
-    tee_pose:
+    overhead_camera:
       shape:
-      - 7  # Tee position (3) + quaternion (4)
-      type: low_dim
+      - 3
+      - 128
+      - 128
+      type: rgb
+    wrist_camera:
+      shape:
+      - 3
+      - 128
+      - 128
+      type: rgb
 policy:  # Parameters to be passed to policy (i.e. the _target_ policy class below)
-  _target_: diffusion_policy.policy.diffusion_unet_lowdim_policy.DiffusionUnetLowdimPolicy
-  shape_meta: ${shape_meta}
-  horizon: ${horizon}
-  n_action_steps: ${n_action_steps}
-  n_obs_steps: ${n_obs_steps}
-  num_DDPM_inference_steps: 100  # Number of DDPM inference steps
-  num_DDIM_inference_steps: 10  # Number of DDIM inference steps (faster)
+  _target_: diffusion_policy.policy.diffusion_unet_hybrid_image_targeted_policy.DiffusionUnetHybridImageTargetedPolicy
+  cond_predict_scale: true
+  crop_shape:
+  - 112
+  - 112
   diffusion_step_embed_dim: 128
   down_dims:
   - 256
   - 512
   - 1024
+  eval_fixed_crop: true  # fix image cropping during evaluation
   kernel_size: 5  # kernel size (in time-dimension) for 1D convolutions in UNet
   n_groups: 8  # Number of groups for group norm
-  cond_predict_scale: true
-  use_target_cond: false  # Maniskill tasks may not have explicit targets
-  noise_scheduler:
+  horizon: ${horizon}
+  n_action_steps: ${n_action_steps}
+  n_obs_steps: ${n_obs_steps}
+  past_action_visible: false  # explicitely condition on past actions
+  DDPM_noise_scheduler:
     _target_: diffusers.schedulers.scheduling_ddpm.DDPMScheduler
-    num_train_timesteps: 100
-    beta_start: 0.0001
     beta_end: 0.02
     beta_schedule: squaredcos_cap_v2
-    variance_type: fixed_small
+    beta_start: 0.0001
     clip_sample: true
+    num_train_timesteps: 100
     prediction_type: epsilon
+    variance_type: fixed_small
+  num_DDPM_inference_steps: 100  # DDPM scheduler is used during training/validation
+  num_DDIM_inference_steps: 10  # DDIM scheduler is used during inference
+  obs_encoder_group_norm: true
+  use_target_cond: true
+  target_dim: 3  # 3 dims for 2D pose of T
+  shape_meta: ${shape_meta}
+  pretrained_encoder: false
+  inference_loading: false
 task:
   dataset:
-    _target_: diffusion_policy.dataset.maniskill_dataset_lowdim.ManiskillLowdimDataset
+    _target_: diffusion_policy.dataset.planar_pushing_dataset_improved_sampling.PlanarPushingDataset
     shape_meta: ${shape_meta}
     horizon: ${horizon}
     n_obs_steps: ${n_obs_steps}
@@ -104,20 +117,14 @@ task:
     pad_after: ${eval:${policy.horizon} - 1}
     pad_before: ${eval:${task.dataset.n_obs_steps} - 1}
     seed: ${seed}
-    state_mode: "qpos_qvel"  # Options: "qpos_qvel", "qpos", "tcp_pose"
-    # IMPORTANT: Update shape_meta.obs.agent_pos.shape above to match this mode:
-    # - qpos_qvel: shape=[14] (joint pos + vel: 7+7)
-    # - qpos: shape=[7] (joint positions only)
-    # - tcp_pose: shape=[7] (end-effector pose)
-    h5_configs:
-    - h5_path: ~/.maniskill/demos/PushT-v1/rl/trajectory_state_pd_ee_delta_pos_truncated_success_only.h5  # ManiSkill dataset
-      json_path: ~/.maniskill/demos/PushT-v1/rl/trajectory_state_pd_ee_delta_pos_truncated_success_only.json  # JSON metadata
-      max_train_episodes: null  # Set to desired number of training episodes (null = use all)
-      sampling_weight: null  # Relative sampling weight (null = proportional to number of episodes)
-      val_ratio: 0.0625  # 1/16% for validation
-  name: maniskill_state_based
+    zarr_configs:
+    - path: data/diffusion_experiments/planar_pushing/sim_sim_tee_data_carbon_large.zarr
+      max_train_episodes: 160
+      sampling_weight: null
+      val_ratio: 0.0625 # 10 / 160 trajectories
+  name: scene_image
   shape_meta: ${shape_meta} # not used?
-task_name: maniskill
+task_name: planar_pushing
 training:
   checkpoint_every: 5
   debug: false
@@ -127,7 +134,7 @@ training:
   lr_warmup_steps: 500
   max_train_steps: null  # per epoch training steps
   max_val_steps: null
-  total_train_steps: 1046000
+  total_train_steps: 104600
   num_epochs: null # 70 for 50, 2000; 200 for 50, 500
   resume: false
   rollout_every: 5  # UNUSED -- no environment rollouts during training

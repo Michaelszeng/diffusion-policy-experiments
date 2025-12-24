@@ -52,7 +52,7 @@ n_obs_steps: 2  # Number of observation steps to condition on
 shape_meta:
   action:
     shape:
-    - 3  # 3-DOF end-effector control (pd_ee_delta_pos) for PushT
+    - 2  # Planar PushT
   obs:
     agent_pos:
       # IMPORTANT: Shape depends on state_mode setting below!
@@ -111,7 +111,7 @@ task:
     # We pad before and after the training episode to maximize data usage.
     # Padding before repeats the first observation pad_before times so that the policy can start predicting actions right at the episode's start.
     # Padding after just allows the policy to predict actions past the end of the episode (in this case, loss is measured against the final action repeated pad_after times).
-    pad_after: ${eval:${policy.n_action_steps} - 1}
+    pad_after: ${eval:${policy.horizon} - 1}
     pad_before: ${eval:${task.dataset.n_obs_steps} - 1}
     seed: ${seed}
     state_mode: "qpos_qvel"  # Options: "qpos_qvel", "qpos", "tcp_pose"
@@ -122,13 +122,11 @@ task:
     camera_keys:
       - "base_camera"  # Extract RGB images from obs/sensor_data/base_camera/rgb
     h5_configs:
-    # - h5_path: /home/michzeng/.maniskill/demos/PushT-v1/rl/trajectory.rgb.pd_ee_delta_pos.physx_cuda.h5  # RGB ManiSkill dataset
-    #   json_path: /home/michzeng/.maniskill/demos/PushT-v1/rl/trajectory.rgb.pd_ee_delta_pos.physx_cuda.json  # JSON metadata
-    - h5_path: ~/.maniskill/demos/PushT-v1/rl/trajectory.rgb.pd_ee_delta_pos.physx_cuda.h5  # RGB ManiSkill dataset
-      json_path: ~/.maniskill/demos/PushT-v1/rl/trajectory.rgb.pd_ee_delta_pos.physx_cuda.json  # JSON metadata/
+    - h5_path: /home/michzeng/ManiSkill/runs/Planar-PushT-v1__ppo_fast__1__1765441128/checkpoints/test_videos/trajectory.rgb.pd_ee_delta_pose.physx_cuda.h5  # RGB ManiSkill dataset
+      json_path: /home/michzeng/ManiSkill/runs/Planar-PushT-v1__ppo_fast__1__1765441128/checkpoints/test_videos/trajectory.rgb.pd_ee_delta_pose.physx_cuda.json  # JSON metadata
       max_train_episodes: null  # Set to desired number of training episodes (null = use all)
       sampling_weight: null  # Relative sampling weight (null = proportional to number of episodes)
-      val_ratio: 0.1  # 10% for validation
+      val_ratio: 0.0625  # 10% for validation
   name: maniskill_scene
   shape_meta: ${shape_meta} # not used?
 task_name: maniskill
@@ -141,7 +139,7 @@ training:
   lr_warmup_steps: 500
   max_train_steps: null  # per epoch training steps
   max_val_steps: null
-  total_train_steps: 1046000
+  total_train_steps: 104600
   num_epochs: null # 70 for 50, 2000; 200 for 50, 500
   resume: false
   rollout_every: 5  # UNUSED -- no environment rollouts during training

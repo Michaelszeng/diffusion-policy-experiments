@@ -20,16 +20,18 @@ DATE=`date +"%Y.%m.%d"`
 TIME=`date +"%H.%M.%S"`
 export cHYDRA_FULL_ERROR=1
 
-EXPERIMENT_NAME=2_obs
+# EXPERIMENT_NAME=2_obs
 
-# EXPERIMENT_NAME=6_obs
-# EXPERIMENT_NAME=10_obs
-# EXPERIMENT_NAME=14_obs
-# EXPERIMENT_NAME=18_obs
-# EXPERIMENT_NAME=6_obs_idle_frames_pruned
-# EXPERIMENT_NAME=10_obs_idle_frames_pruned
-# EXPERIMENT_NAME=14_obs_idle_frames_pruned
-# EXPERIMENT_NAME=18_obs_idle_frames_pruned
+# EXPERIMENT_NAME=2_obs_32_horizon
+# EXPERIMENT_NAME=6_obs_32_horizon
+# EXPERIMENT_NAME=10_obs_32_horizon
+# EXPERIMENT_NAME=14_obs_32_horizon
+# EXPERIMENT_NAME=18_obs_32_horizon
+# EXPERIMENT_NAME=2_obs_32_horizon_idle_frames_pruned
+# EXPERIMENT_NAME=6_obs_32_horizon_idle_frames_pruned
+# EXPERIMENT_NAME=10_obs_32_horizon_idle_frames_pruned
+# EXPERIMENT_NAME=14_obs_32_horizon_idle_frames_pruned
+# EXPERIMENT_NAME=18_obs_32_horizon_idle_frames_pruned
 
 CONFIG_DIR=config/planar_pushing
 CONFIG_NAME=${EXPERIMENT_NAME}.yaml

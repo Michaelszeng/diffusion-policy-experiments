@@ -39,7 +39,7 @@ exp_name: defaults
 logging:  # wandb logging configuration
   group: null
   id: null
-  name: 14_obs_idle_frames_pruned
+  name: 6_obs_32_horizon_idle_frames_pruned
   project: t_pushing
   resume: true
 multi_run:
@@ -48,7 +48,7 @@ multi_run:
 horizon: 32
 n_action_steps: 8  # Inference-only parameter
 n_latency_steps: 0  # How many timesteps to offset the action predictions back by to account for inference time/latency
-n_obs_steps: 14  # Number of observation steps to condition on
+n_obs_steps: 6  # Number of observation steps to condition on
 shape_meta:
   action:
     shape:
@@ -116,7 +116,7 @@ task:
     # We pad before and after the training episode to maximize data usage.
     # Padding before repeats the first observation pad_before times so that the policy can start predicting actions right at the episode's start.
     # Padding after just allows the policy to predict actions past the end of the episode (in this case, loss is measured against the final action repeated pad_after times).
-    pad_after: ${eval:${policy.n_action_steps} - 1}
+    pad_after: ${eval:${policy.horizon} - 1}
     pad_before: ${eval:${task.dataset.n_obs_steps} - 1}
     seed: ${seed}
     zarr_configs:

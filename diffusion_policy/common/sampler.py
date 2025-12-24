@@ -1,3 +1,7 @@
+"""
+Dataset samplers (sample individual training samples from a episodic replay buffer).
+"""
+
 from typing import Optional
 
 import numba

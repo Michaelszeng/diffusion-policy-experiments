@@ -290,9 +290,6 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         Note:
             - This implements classifier-free guidance through conditioning
             - condition_mask typically masks out future actions, leaving model to predict them
-            - global_cond encodes "what I see" (current observations)
-            - target_cond encodes "what I want" (goal state)
-            - The result is "what I should do" (action sequence)
         """
         model = self.model
         if use_DDIM:
@@ -370,36 +367,6 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         if self.use_target_cond:
             assert "target" in obs_dict
         assert "past_action" not in obs_dict  # not implemented yet
-
-        # # DEBUG BREAKPOINT
-        # import os
-
-        # import matplotlib.pyplot as plt
-        # import numpy as np
-
-        # # access raw images before encoding
-        # # obs_dict["obs"] contains the actual image data
-        # print("\n=== DEBUG BREAKPOINT in predict_action ===")
-        # print(f"obs_dict keys: {obs_dict.keys()}")
-        # print(f"obs_dict['obs'] keys: {obs_dict['obs'].keys()}")
-        # for key in obs_dict["obs"].keys():
-        #     print(f"  {key} shape: {obs_dict['obs'][key].shape}")
-        # if "target" in obs_dict:
-        #     print(f"obs_dict['target'] shape: {obs_dict['target'].shape}")
-        # print(f"use_DDIM: {use_DDIM}")
-
-        # # Example: visualize first image in batch (if you want to see it)
-        # for key in obs_dict["obs"].keys():
-        #     if len(obs_dict["obs"][key].shape) == 5:  # [B, T, C, H, W]
-        #         img = obs_dict["obs"][key][0, 0].cpu().permute(1, 2, 0).numpy()
-        #         plt.figure(figsize=(5, 5))
-        #         plt.imshow(img)
-        #         plt.title(f"{key} - first observation")
-        #         plt.axis("off")
-        #         plt.show()
-        #         plt.savefig("image_predict_action.png", dpi=150, bbox_inches="tight")
-
-        # breakpoint()
 
         # Normalize obs dict
         nobs = self.normalizer.normalize(obs_dict["obs"])
@@ -488,36 +455,6 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         prediction type config).
         """
         assert "valid_mask" not in batch
-
-        # # DEBUG BREAKPOINT
-        # import os
-
-        # import matplotlib.pyplot as plt
-        # import numpy as np
-
-        # # access raw images before encoding
-        # # batch["obs"] contains the actual image data
-        # print("\n=== DEBUG BREAKPOINT in Policy.forward ===")
-        # print(f"batch keys: {batch.keys()}")
-        # print(f"batch['obs'] keys: {batch['obs'].keys()}")
-        # for key in batch["obs"].keys():
-        #     print(f"  {key} shape: {batch['obs'][key].shape}")
-        # print(f"batch['action'] shape: {batch['action'].shape}")
-        # if "target" in batch:
-        #     print(f"batch['target'] shape: {batch['target'].shape}")
-
-        # # Example: visualize first image in batch (if you want to see it)
-        # for key in batch["obs"].keys():
-        #     if len(batch["obs"][key].shape) == 5:  # [B, T, C, H, W]
-        #         img = batch["obs"][key][0, 0].cpu().permute(1, 2, 0).numpy()
-        #         plt.figure(figsize=(5, 5))
-        #         plt.imshow(img)
-        #         plt.title(f"{key} - first observation")
-        #         plt.axis("off")
-        #         plt.show()
-        #         plt.savefig("image_policy_forward.png", dpi=150, bbox_inches="tight")
-
-        # breakpoint()
 
         # Collect normalized observations/actions/targets
         nobs = self.normalizer.normalize(batch["obs"])

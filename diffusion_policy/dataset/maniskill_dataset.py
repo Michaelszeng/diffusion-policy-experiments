@@ -31,7 +31,10 @@ class ManiskillDataset(BaseImageDataset):
     - Robot joint velocities: obs.agent.qvel (T, 7)
     - End-effector pose: obs.extra.tcp_pose (T, 7)
     - RGB camera images: obs.sensor_data.base_camera.rgb (T, H, W, C)
-    - Actions: actions (T, 7) - joint commands
+    - Actions: actions (T, action_dim) - control commands (task-dependent)
+      * 2D for planar tasks (e.g., Planar-PushT with pd_ee_delta_pose)
+      * 7D for full manipulation (e.g., joint control tasks)
+      * Actions are clipped to [-1, 1] by default to ensure bounded output space
 
     PRIVILEGED DATA (What we ignore):
     - Episode completion signals: terminated, truncated, success
@@ -45,6 +48,8 @@ class ManiskillDataset(BaseImageDataset):
     - "qpos_qvel": Joint positions + velocities (T, 14) [DEFAULT]
     - "qpos": Joint positions only (T, 7)
     - "tcp_pose": End-effector pose (T, 7)
+
+    NOTE: Action dimension is automatically detected from the H5 file and can vary by task.
     """
 
     def __init__(
@@ -63,6 +68,8 @@ class ManiskillDataset(BaseImageDataset):
         low_pass_on_overhead: bool = False,
         state_mode: str = "qpos_qvel",  # Options: "qpos_qvel", "qpos", "tcp_pose"
         camera_keys: List[str] = None,  # List of camera names to extract (e.g., ["base_camera"])
+        clip_actions: bool = True,  # Clip actions to [-1, 1] range
+        action_clip_range: tuple = (-1.0, 1.0),  # Min and max values for action clipping
     ):
         super().__init__()
         self._validate_h5_configs(h5_configs)
@@ -79,6 +86,8 @@ class ManiskillDataset(BaseImageDataset):
         # Store parameters needed for data extraction
         self.state_mode = state_mode
         self.camera_keys = camera_keys or []  # Default to empty list if no cameras specified
+        self.clip_actions = clip_actions
+        self.action_clip_range = action_clip_range
 
         # Extract RGB keys from shape_meta (needed for data extraction)
         self.rgb_keys = []
@@ -193,7 +202,13 @@ class ManiskillDataset(BaseImageDataset):
                 # Actions: (T, action_dim)
                 actions = traj["actions"][:]
                 episode_length = len(actions)
-                episode_data["action"] = actions.astype(np.float32)
+                actions = actions.astype(np.float32)
+
+                # Clip actions to specified range (default: [-1, 1])
+                if self.clip_actions:
+                    actions = np.clip(actions, self.action_clip_range[0], self.action_clip_range[1])
+
+                episode_data["action"] = actions
 
                 # Robot state extraction based on mode
                 episode_data["state"] = self._extract_robot_state(traj, episode_length)
@@ -397,32 +412,26 @@ class ManiskillDataset(BaseImageDataset):
 
 
 if __name__ == "__main__":
-    # Example usage and testing with RGB observations
-    # NOTE: shape_meta must match state_mode! Examples:
+    # Example usage and testing with RGB observations for PLANAR PUSH-T task
+    # NOTE: shape_meta must match state_mode and action space!
 
-    # For qpos_qvel mode (default):
+    # For planar push-T with 2D end-effector actions and qpos_qvel state:
     shape_meta = {
-        "action": {"shape": [7]},  # 7-DOF robot arm from ManiSkill inspection
+        "action": {"shape": [2]},  # 2D end-effector coordinates for planar task
         "obs": {
             "agent_pos": {"type": "low_dim", "shape": [14]},  # qpos + qvel (7 + 7)
             "base_camera": {"type": "rgb", "shape": [3, 128, 128]},  # RGB camera from ManiSkill
         },
     }
 
-    # For qpos or tcp_pose modes, use shape [7] instead:
-    # shape_meta = {
-    #     "action": {"shape": [7]},
-    #     "obs": {
-    #         "agent_pos": {"type": "low_dim", "shape": [7]},  # qpos only OR tcp_pose
-    #         "base_camera": {"type": "rgb", "shape": [3, 128, 128]},
-    #     },
-    # }
-
     h5_configs = [
         {
-            "h5_path": "/home/michzeng/.maniskill/demos/PushT-v1/rl/trajectory.rgb.pd_joint_delta_pos.physx_cuda.h5",
-            "json_path": "/home/michzeng/.maniskill/demos/PushT-v1/rl/"
-            "trajectory.rgb.pd_joint_delta_pos.physx_cuda.json",  # Optional
+            "h5_path": (
+                "/home/michzeng/ManiSkill/runs/Planar-PushT-v1__ppo_fast__1__1765441128/checkpoints/test_videos/trajectory.rgb.pd_ee_delta_pose.physx_cuda.h5"
+            ),
+            "json_path": (
+                "/home/michzeng/ManiSkill/runs/Planar-PushT-v1__ppo_fast__1__1765441128/checkpoints/test_videos/trajectory.rgb.pd_ee_delta_pose.physx_cuda.json"
+            ),  # Optional
             "max_train_episodes": None,  # Use all episodes for training
             "sampling_weight": 1.0,
             "val_ratio": 0.1,  # 10% for validation
@@ -441,6 +450,8 @@ if __name__ == "__main__":
         val_ratio=0.1,
         state_mode="qpos_qvel",  # Use joint positions + velocities
         camera_keys=["base_camera"],  # Extract base_camera RGB images
+        clip_actions=True,  # Clip actions to [-1, 1]
+        action_clip_range=(-1.0, 1.0),  # Action clipping range
     )
 
     print("=" * 60)
@@ -449,7 +460,7 @@ if __name__ == "__main__":
     print("Dataset initialized successfully!")
     print(f"Number of datasets: {dataset.get_num_datasets()}")
     print(f"Total episodes (train + val): {dataset.get_num_episodes()}")
-    print(f"Training dataset length: {len(dataset)}")
+    print(f"Training dataset length (after applying max_train_episodes) (number of training samples): {len(dataset)}")
 
     # Print detailed information for each dataset
     for i in range(dataset.get_num_datasets()):
