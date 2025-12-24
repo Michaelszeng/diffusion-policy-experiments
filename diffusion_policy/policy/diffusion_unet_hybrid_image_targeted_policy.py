@@ -290,9 +290,6 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         Note:
             - This implements classifier-free guidance through conditioning
             - condition_mask typically masks out future actions, leaving model to predict them
-            - global_cond encodes "what I see" (current observations)
-            - target_cond encodes "what I want" (goal state)
-            - The result is "what I should do" (action sequence)
         """
         model = self.model
         if use_DDIM:

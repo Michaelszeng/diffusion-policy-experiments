@@ -427,12 +427,10 @@ if __name__ == "__main__":
     h5_configs = [
         {
             "h5_path": (
-                "/home/michzeng/ManiSkill/runs/Planar-PushT-v1__ppo_fast__1__1765298439/test_videos/"
-                "trajectory.rgb.pd_ee_delta_pose.physx_cuda.h5"
+                "/home/michzeng/ManiSkill/runs/Planar-PushT-v1__ppo_fast__1__1765441128/checkpoints/test_videos/trajectory.rgb.pd_ee_delta_pose.physx_cuda.h5"
             ),
             "json_path": (
-                "/home/michzeng/ManiSkill/runs/Planar-PushT-v1__ppo_fast__1__1765298439/test_videos/"
-                "trajectory.rgb.pd_ee_delta_pose.physx_cuda.json"
+                "/home/michzeng/ManiSkill/runs/Planar-PushT-v1__ppo_fast__1__1765441128/checkpoints/test_videos/trajectory.rgb.pd_ee_delta_pose.physx_cuda.json"
             ),  # Optional
             "max_train_episodes": None,  # Use all episodes for training
             "sampling_weight": 1.0,
