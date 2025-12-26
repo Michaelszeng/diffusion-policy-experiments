@@ -496,7 +496,7 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                             self.save_checkpoint(path=topk_ckpt_path)
                             break
                 # last epoch => save last checkpoint
-                if self.epoch == cfg.training.num_epochs - 1:
+                if self.epoch == cfg.training.num_epochs - 1 and save_last_ckpt:
                     self.save_checkpoint()
                 # ========= eval end for this epoch ==========
                 policy.train()
