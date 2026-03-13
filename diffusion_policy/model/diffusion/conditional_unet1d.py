@@ -311,7 +311,10 @@ class ConditionalUnet1D(nn.Module):
             x = mid_module(x, global_feature)
 
         for idx, (resnet, resnet2, upsample) in enumerate(self.up_modules):
-            x = torch.cat((x, h.pop()), dim=1)
+            h_pop = h.pop()
+            if x.shape[-1] != h_pop.shape[-1]:
+                x = x[..., : h_pop.shape[-1]]
+            x = torch.cat((x, h_pop), dim=1)
             x = resnet(x, global_feature)
             # The correct condition should be:
             # if idx == (len(self.up_modules)-1) and len(h_local) > 0:
@@ -398,7 +401,10 @@ class VariableConditionalUnet1D(ConditionalUnet1D):
             x = mid_module(x, global_feature)
 
         for idx, (resnet, resnet2, upsample) in enumerate(self.up_modules):
-            x = torch.cat((x, h.pop()), dim=1)
+            h_pop = h.pop()
+            if x.shape[-1] != h_pop.shape[-1]:
+                x = x[..., : h_pop.shape[-1]]
+            x = torch.cat((x, h_pop), dim=1)
             x = resnet(x, global_feature)
             # The correct condition should be:
             # if idx == (len(self.up_modules)-1) and len(h_local) > 0:

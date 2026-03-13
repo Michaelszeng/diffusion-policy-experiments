@@ -173,7 +173,7 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
             input_dim=input_dim,
             local_cond_dim=None,
             global_cond_dim=global_cond_dim,
-            target_dim=target_dim,
+            target_dim=target_dim if use_target_cond else None,
             diffusion_step_embed_dim=diffusion_step_embed_dim,
             down_dims=down_dims,
             kernel_size=kernel_size,
