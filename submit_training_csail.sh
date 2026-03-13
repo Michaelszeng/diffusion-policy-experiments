@@ -74,7 +74,8 @@ export HYDRA_FULL_ERROR=1
 
 # --- Furniture Bench ---
 EXPERIMENT_CLASS=furniture_bench
-EXPERIMENT_NAME=2_obs_one_leg_teleop
+# EXPERIMENT_NAME=2_obs_one_leg_teleop
+EXPERIMENT_NAME=2_obs_one_leg_scripted
 
 # --- Experiment Configuration ---
 CONFIG_DIR=config/${EXPERIMENT_CLASS}
