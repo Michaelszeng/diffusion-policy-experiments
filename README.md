@@ -43,6 +43,17 @@ pip install einops
 pip install zarr
 ```
 
+### CSAIL SLURM Cluster Installation
+
+```bash
+python3 -m venv env --without-pip
+./env/bin/activate
+curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
+python3 /tmp/get-pip.py --no-warn-script-location
+pip install -r requirements.txt
+```
+
+
 ### Obtaining Training Data
 Obtain `sim_sim_tee_data_carbon_large.zarr` from Adam Wei. Place in `data/diffusion_experiments/planar_pushing/sim_sim_tee_data_carbon_large.zarr` folder.
 
