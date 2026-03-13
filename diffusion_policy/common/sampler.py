@@ -96,7 +96,7 @@ class ImprovedDatasetSampler:
     ):
         """
         key_first_k: dict str: int
-            Only take first k data from these keys (to improve perf)
+            Only take first k data from these keys (to improve performance)
         """
         assert sequence_length >= 1
         if keys is None:

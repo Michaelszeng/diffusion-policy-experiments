@@ -52,30 +52,30 @@ n_obs_steps: 2  # Number of observation steps to condition on
 shape_meta:
   action:
     shape:
-    - 2
+    - 10
   obs:
-    agent_pos:
+    color_image1:
       shape:
       - 3
+      - 224
+      - 224
+      type: rgb
+    color_image2:
+      shape:
+      - 3
+      - 224
+      - 224
+      type: rgb
+    robot_state:
+      shape:
+      - 14
       type: low_dim
-    overhead_camera:
-      shape:
-      - 3
-      - 128
-      - 128
-      type: rgb
-    wrist_camera:
-      shape:
-      - 3
-      - 128
-      - 128
-      type: rgb
 policy:  # Parameters to be passed to policy (i.e. the _target_ policy class below)
   _target_: diffusion_policy.policy.diffusion_unet_hybrid_image_targeted_policy.DiffusionUnetHybridImageTargetedPolicy
   cond_predict_scale: true
   crop_shape:
-  - 112
-  - 112
+  - 212
+  - 212
   diffusion_step_embed_dim: 128
   down_dims:
   - 256
@@ -100,14 +100,14 @@ policy:  # Parameters to be passed to policy (i.e. the _target_ policy class bel
   num_DDPM_inference_steps: 100  # DDPM scheduler is used during training/validation
   num_DDIM_inference_steps: 10  # DDIM scheduler is used during inference
   obs_encoder_group_norm: true
-  use_target_cond: true
-  target_dim: 3  # 3 dims for 2D pose of T
+  use_target_cond: false
+  target_dim: 10  # 10 dims for furniture bench action
   shape_meta: ${shape_meta}
   pretrained_encoder: false
   inference_loading: false
 task:
   dataset:
-    _target_: diffusion_policy.dataset.planar_pushing_dataset_improved_sampling.PlanarPushingDataset
+    _target_: diffusion_policy.dataset.furniture_bench_dataset.FurnitureBenchDataset
     shape_meta: ${shape_meta}
     horizon: ${horizon}
     n_obs_steps: ${n_obs_steps}
@@ -118,13 +118,13 @@ task:
     pad_before: ${eval:${task.dataset.n_obs_steps} - 1}
     seed: ${seed}
     zarr_configs:
-    - path: data/diffusion_experiments/planar_pushing/sim_sim_tee_data_carbon_large.zarr
-      max_train_episodes: 160
+    - path: /home/michzeng/benchmark-furniturebench-juicer/dataset/imitation-juicer-data-processed-001/processed/sim/one_leg/teleop/low/success.zarr
+      max_train_episodes: null
       sampling_weight: null
-      val_ratio: 0.0625 # 10 / 160 trajectories
-  name: scene_image
+      val_ratio: 0.0625
+  name: furniture_bench
   shape_meta: ${shape_meta} # not used?
-task_name: planar_pushing
+task_name: furniture_bench
 training:
   checkpoint_every: 5
   debug: false

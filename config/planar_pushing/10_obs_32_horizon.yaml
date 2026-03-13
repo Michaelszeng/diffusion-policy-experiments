@@ -45,7 +45,7 @@ logging:  # wandb logging configuration
 multi_run:
   wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_hybrid_pusher_long_context
   run_dir: data/outputs/${multi_run.wandb_name_base}
-horizon: 32
+horizon: ${eval:${n_obs_steps} + 15}
 n_action_steps: 8  # Inference-only parameter
 n_latency_steps: 0  # How many timesteps to offset the action predictions back by to account for inference time/latency
 n_obs_steps: 10  # Number of observation steps to condition on

@@ -7,14 +7,12 @@ from typing import Dict, List
 import h5py
 import numpy as np
 import torch
-from torchvision import transforms
+from tqdm import tqdm
 
-from diffusion_policy.common.normalize_util import get_image_range_normalizer
 from diffusion_policy.common.pytorch_util import dict_apply
 from diffusion_policy.common.replay_buffer import ReplayBuffer
 from diffusion_policy.common.sampler import ImprovedDatasetSampler, downsample_mask, get_val_mask
-from diffusion_policy.dataset.base_dataset import BaseImageDataset, gaussian_kernel, low_pass_filter
-from diffusion_policy.model.common.normalizer import LinearNormalizer
+from diffusion_policy.dataset.base_dataset import BaseImageDataset, gaussian_kernel
 
 try:
     import matplotlib.pyplot as plt
@@ -163,13 +161,7 @@ class ManiskillDataset(BaseImageDataset):
 
         # Set up color jitter
         self.color_jitter = color_jitter
-        if color_jitter is not None:
-            self.transforms = transforms.ColorJitter(
-                brightness=self.color_jitter.get("brightness", 0),
-                contrast=self.color_jitter.get("contrast", 0),
-                saturation=self.color_jitter.get("saturation", 0),
-                hue=self.color_jitter.get("hue", 0),
-            )
+        self.transforms = self.get_default_color_jitter(color_jitter)
 
         # Store parameters
         self.horizon = horizon
@@ -193,7 +185,7 @@ class ManiskillDataset(BaseImageDataset):
 
             print(f"Found {len(traj_keys)} episodes.")
 
-            for traj_key in traj_keys:
+            for traj_key in tqdm(traj_keys, desc="Loading episodes"):
                 traj = h5_file[traj_key]
 
                 # Extract episode data
@@ -285,52 +277,8 @@ class ManiskillDataset(BaseImageDataset):
 
         return val_set
 
-    def get_normalizer(self, mode="limits", **kwargs):
-        """Compute normalizer from data"""
-        assert mode == "limits", "Only supports limits mode"
-        low_dim_keys = ["action", "agent_pos"]
-        input_stats = {}
-
-        for replay_buffer in self.replay_buffers:
-            data = {
-                "action": replay_buffer["action"],
-                "agent_pos": replay_buffer["state"],
-            }
-            normalizer = LinearNormalizer()
-            normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
-
-            # Update mins and maxes
-            for key in low_dim_keys:
-                _max = normalizer[key].params_dict.input_stats.max
-                _min = normalizer[key].params_dict.input_stats.min
-
-                if key not in input_stats:
-                    input_stats[key] = {"max": _max, "min": _min}
-                else:
-                    input_stats[key]["max"] = torch.maximum(input_stats[key]["max"], _max)
-                    input_stats[key]["min"] = torch.minimum(input_stats[key]["min"], _min)
-
-        # Create final normalizer
-        normalizer = LinearNormalizer()
-        normalizer.fit_from_input_stats(input_stats_dict=input_stats)
-        for key in self.rgb_keys:
-            normalizer[key] = get_image_range_normalizer()
-        return normalizer
-
-    def get_sample_probabilities(self):
-        return self.sample_probabilities
-
-    def get_num_datasets(self):
-        return self.num_datasets
-
-    def get_num_episodes(self, index=None):
-        if index is None:
-            num_episodes = 0
-            for i in range(self.num_datasets):
-                num_episodes += self.replay_buffers[i].n_episodes
-            return num_episodes
-        else:
-            return self.replay_buffers[index].n_episodes
+    def _lowdim_key_map(self):
+        return {"action": "action", "agent_pos": "state"}
 
     def __len__(self) -> int:
         length = 0
@@ -427,14 +375,14 @@ if __name__ == "__main__":
     h5_configs = [
         {
             "h5_path": (
-                "/home/michzeng/ManiSkill/runs/Planar-PushT-v1__ppo_fast__1__1765441128/checkpoints/test_videos/trajectory.rgb.pd_ee_delta_pose.physx_cuda.h5"
+                "/home/michzeng/ManiSkill/runs/Planar-PushT-v1__ppo_fast__1__1766536544/checkpoints/test_videos/trajectory.rgb.pd_ee_delta_pose.physx_cuda.h5"
             ),
             "json_path": (
-                "/home/michzeng/ManiSkill/runs/Planar-PushT-v1__ppo_fast__1__1765441128/checkpoints/test_videos/trajectory.rgb.pd_ee_delta_pose.physx_cuda.json"
+                "/home/michzeng/ManiSkill/runs/Planar-PushT-v1__ppo_fast__1__1766536544/checkpoints/test_videos/trajectory.rgb.pd_ee_delta_pose.physx_cuda.json"
             ),  # Optional
-            "max_train_episodes": None,  # Use all episodes for training
+            "max_train_episodes": 1700,
             "sampling_weight": 1.0,
-            "val_ratio": 0.1,  # 10% for validation
+            "val_ratio": 0.0625,
         }
     ]
 
@@ -447,7 +395,7 @@ if __name__ == "__main__":
         pad_before=1,
         pad_after=7,
         seed=42,
-        val_ratio=0.1,
+        val_ratio=0.0625,
         state_mode="qpos_qvel",  # Use joint positions + velocities
         camera_keys=["base_camera"],  # Extract base_camera RGB images
         clip_actions=True,  # Clip actions to [-1, 1]

@@ -18,7 +18,7 @@ wandb offline
 # Export date, time, environment variables
 DATE=`date +"%Y.%m.%d"`
 TIME=`date +"%H.%M.%S"`
-export cHYDRA_FULL_ERROR=1
+export HYDRA_FULL_ERROR=1
 
 # EXPERIMENT_NAME=2_obs
 

@@ -1,26 +1,19 @@
-import copy
 import math
 import os
 import random
 import time
 from typing import Dict
 
-import cv2
 import numpy as np
 import torch
-import torch.nn.functional as F
 import zarr
-from torchvision import transforms
-
-from diffusion_policy.common.normalize_util import get_image_range_normalizer
 from diffusion_policy.common.pytorch_util import dict_apply
 from diffusion_policy.common.replay_buffer import ReplayBuffer
-from diffusion_policy.common.sampler import ImprovedDatasetSampler, downsample_mask, get_val_mask
-from diffusion_policy.dataset.base_dataset import BaseImageDataset, gaussian_kernel, low_pass_filter
-from diffusion_policy.model.common.normalizer import LinearNormalizer
+from diffusion_policy.common.sampler import ImprovedDatasetSampler
+from diffusion_policy.dataset.base_dataset import BaseZarrImageDataset, gaussian_kernel
 
 
-class PlanarPushingDataset(BaseImageDataset):
+class PlanarPushingDataset(BaseZarrImageDataset):
     """
     Dataset for planar pushing that supports:
     - hybrid observations (images + end effector state)
@@ -33,7 +26,6 @@ class PlanarPushingDataset(BaseImageDataset):
         self,
         zarr_configs,
         shape_meta,
-        use_one_hot_encoding=False,
         horizon=1,
         n_obs_steps=None,
         pad_before=0,
@@ -64,13 +56,8 @@ class PlanarPushingDataset(BaseImageDataset):
 
         keys = self.rgb_keys + ["state", "action", "target"]
 
-        # trick for saving ram
-        key_first_k = dict()
-        if n_obs_steps is not None:
-            # only take first k obs from images
-            for key in keys:
-                key_first_k[key] = n_obs_steps
-        key_first_k["action"] = horizon
+        # Trick for saving RAM
+        key_first_k = self._build_key_first_k(keys, n_obs_steps, horizon)
 
         # Load in all the zarr datasets
         self.num_datasets = len(zarr_configs)
@@ -94,16 +81,13 @@ class PlanarPushingDataset(BaseImageDataset):
             n_episodes = self.replay_buffers[-1].n_episodes
 
             # Set up masks
-            if "val_ratio" in zarr_config and zarr_config["val_ratio"] is not None:
-                dataset_val_ratio = zarr_config["val_ratio"]
-            else:
-                dataset_val_ratio = val_ratio
-            val_mask = get_val_mask(n_episodes=n_episodes, val_ratio=dataset_val_ratio, seed=seed)
-            train_mask = ~val_mask
-            # Note max_train_episodes is the max number of training episodes
-            # not the total number of train and val episodes!
-            train_mask = downsample_mask(mask=train_mask, max_n=max_train_episodes, seed=seed)
-
+            dataset_val_ratio = zarr_config.get("val_ratio", val_ratio)
+            train_mask, val_mask = self._build_episode_masks(
+                n_episodes=n_episodes,
+                val_ratio=dataset_val_ratio,
+                max_train_episodes=max_train_episodes,
+                seed=seed,
+            )
             self.train_masks.append(train_mask)
             self.val_masks.append(val_mask)
 
@@ -126,18 +110,12 @@ class PlanarPushingDataset(BaseImageDataset):
             else:
                 self.sample_probabilities[i] = np.sum(train_mask)
             self.zarr_paths.append(zarr_path)
+
         # Normalize sample_probabilities
         self.sample_probabilities = self._normalize_sample_probabilities(self.sample_probabilities)
 
         # Set up color jitter
-        self.color_jitter = color_jitter
-        if color_jitter is not None:
-            self.transforms = transforms.ColorJitter(
-                brightness=self.color_jitter.get("brightness", 0),
-                contrast=self.color_jitter.get("contrast", 0),
-                saturation=self.color_jitter.get("saturation", 0),
-                hue=self.color_jitter.get("hue", 0),
-            )
+        self.transforms = self.get_default_color_jitter(color_jitter)  # CURRENTLY UNUSED
 
         # Load other variables
         self.horizon = horizon
@@ -145,195 +123,22 @@ class PlanarPushingDataset(BaseImageDataset):
         self.pad_after = pad_after
         self.n_obs_steps = n_obs_steps
         self.shape_meta = shape_meta
-        self.use_one_hot_encoding = use_one_hot_encoding
-        self.one_hot_encoding = None  # if val dataset, this will not be None
 
-    def get_validation_dataset(self, index=None):
-        # Create validation dataset
-        val_set = copy.copy(self)
-
-        if index is None:
-            assert self.num_datasets == 1, "Must specify validation dataset index if multiple datasets"
-            index = 0
-        else:
-            val_set.replay_buffers = [self.replay_buffers[index]]
-            val_set.train_masks = [self.train_masks[index]]
-            val_set.val_masks = [self.val_masks[index]]
-            val_set.zarr_paths = [self.zarr_paths[index]]
-        val_set.num_datasets = 1
-        val_set.sample_probabilities = np.array([1.0])
-
-        # Set one hot encoding
-        val_set.one_hot_encoding = np.zeros(self.num_datasets).astype(np.float32)
-        val_set.one_hot_encoding[index] = 1
-
-        val_set.samplers = [
-            ImprovedDatasetSampler(
-                replay_buffer=self.replay_buffers[index],
-                sequence_length=self.horizon,
-                shape_meta=self.shape_meta,
-                pad_before=self.pad_before,
-                pad_after=self.pad_after,
-                episode_mask=self.val_masks[index],
-            )
-        ]
-
-        return val_set
-
-    def get_normalizer(self, mode="limits", **kwargs):
-        # compute mins and maxes
-        assert mode == "limits", "Only supports limits mode"
-        low_dim_keys = ["action", "agent_pos", "target"]
-        input_stats = {}
-        for replay_buffer in self.replay_buffers:
-            data = {
-                "action": replay_buffer["action"],
-                "agent_pos": replay_buffer["state"],
-                "target": replay_buffer["target"],
-            }
-            normalizer = LinearNormalizer()
-            normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
-
-            # Update mins and maxes
-            for key in low_dim_keys:
-                _max = normalizer[key].params_dict.input_stats.max
-                _min = normalizer[key].params_dict.input_stats.min
-
-                if key not in input_stats:
-                    input_stats[key] = {"max": _max, "min": _min}
-                else:
-                    input_stats[key]["max"] = torch.maximum(input_stats[key]["max"], _max)
-                    input_stats[key]["min"] = torch.minimum(input_stats[key]["min"], _min)
-
-        # Create normalizer
-        # Normalizer is a PyTorch parameter dict containing normalizers for all the keys
-        normalizer = LinearNormalizer()
-        normalizer.fit_from_input_stats(input_stats_dict=input_stats)
-        for key in self.rgb_keys:
-            normalizer[key] = get_image_range_normalizer()
-        return normalizer
-
-    def get_sample_probabilities(self):
-        return self.sample_probabilities
-
-    def get_num_datasets(self):
-        return self.num_datasets
-
-    def get_num_episodes(self, index=None):
-        if index is None:
-            num_episodes = 0
-            for i in range(self.num_datasets):
-                num_episodes += self.replay_buffers[i].n_episodes
-            return num_episodes
-        else:
-            return self.replay_buffers[index].n_episodes
-
-    def __len__(self) -> int:
-        length = 0
-        for sampler in self.samplers:
-            length += len(sampler)
-        return length
-
-    def _sample_to_data(self, sample, sampler_idx):
-        target = sample["target"][0].astype(np.float32)
-        agent_pos = sample["state"].astype(np.float32)
-
-        data = {
-            "obs": {
-                "agent_pos": agent_pos,  # T_obs, 3
-            },
-            "target": target,  # 3
-            "action": sample["action"].astype(np.float32),  # T, 2
-        }
-
-        if self.use_one_hot_encoding:
-            if self.one_hot_encoding is None:
-                data["one_hot_encoding"] = np.zeros(self.num_datasets).astype(np.float32)
-                data["one_hot_encoding"][sampler_idx] = 1
-            else:
-                data["one_hot_encoding"] = self.one_hot_encoding
-
-        # Add images to data
-        if self.color_jitter is None:
-            for key in self.rgb_keys:
-                data["obs"][key] = np.moveaxis(sample[key], -1, 1) / 255.0
-                if self.low_pass_on_wrist and key == "wrist_camera":
-                    data["obs"][key] = low_pass_filter(
-                        torch.from_numpy(data["obs"][key]), self.wrist_kernel.to(dtype=torch.float64)
-                    ).numpy()
-                if self.low_pass_on_overhead and key == "overhead_camera":
-                    data["obs"][key] = low_pass_filter(
-                        torch.from_numpy(data["obs"][key]), self.overhead_kernel.to(dtype=torch.float64)
-                    ).numpy()
-                del sample[key]
-        else:
-            # Stack images and apply color jitter to ensure
-            # all cameras have consistent color jitter
-            keys = self.rgb_keys
-            length = sample[keys[0]].shape[0]
-
-            imgs = np.moveaxis(np.vstack([sample[key] for key in keys]), -1, 1) / 255.0
-            for i in range(3):
-                scale = np.random.uniform(0.75, 1.25)  # TODO: these are hardcoded
-                imgs[:, i, :, :] = np.clip(scale * imgs[:, i, :, :], 0, 1)
-
-            # imgs = np.vstack([sample[key] for key in keys])
-            imgs = self.transforms(torch.from_numpy(imgs)).numpy()
-            for i, key in enumerate(keys):
-                data["obs"][key] = imgs[i * length : (i + 1) * length]
-                del sample[key]
-
-        return data
-
-    def _validate_zarr_configs(self, zarr_configs):
-        """
-        Validate the zarr configs for the PlanarPushingDataset.
-        - Check if the zarr path exists
-        - Check if the max_train_episodes is greater than 0
-        - Check if the sampling_weight is greater than or equal to 0
-        - Check if all or none of the zarr_configs have a sampling_weight
-        """
-        num_null_sampling_weights = 0
-        N = len(zarr_configs)
-
-        for zarr_config in zarr_configs:
-            zarr_path = os.path.expanduser(zarr_config["path"])
-            if not os.path.exists(zarr_path):
-                raise ValueError(f"path {zarr_path} does not exist")
-
-            max_train_episodes = zarr_config.get("max_train_episodes", None)
-            if max_train_episodes is not None and max_train_episodes <= 0:
-                raise ValueError(f"max_train_episodes must be greater than 0, got {max_train_episodes}")
-
-            sampling_weight = zarr_config.get("sampling_weight", None)
-            if sampling_weight is None:
-                num_null_sampling_weights += 1
-            elif sampling_weight < 0:
-                raise ValueError(f"sampling_weight must be greater than or equal to 0, got {sampling_weight}")
-
-        if num_null_sampling_weights not in [0, N]:
-            raise ValueError("Either all or none of the zarr_configs must have a sampling_weight")
+    def _lowdim_key_map(self):
+        return {"action": "action", "agent_pos": "state", "target": "target"}
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        # To sample a sequence, first sample a dataset,
-        # then sample a sequence from that dataset
-        # Note that this implementation does not guarantee that each unique
-        # sequence is sampled on every epoch!
-
-        # Get sample
         if self.num_datasets == 1:
-            sampler_idx = 0
-            sampler = self.samplers[sampler_idx]
-            data = sampler.sample_data(idx)
+            data = self.samplers[0].sample_data(idx)
         else:
             sampler_idx = np.random.choice(self.num_datasets, p=self.sample_probabilities)
             sampler = self.samplers[sampler_idx]
             data = sampler.sample_data(idx % len(sampler))
 
-        # Process sample
-        # data = self._sample_to_data(sample, sampler_idx)
-        torch_data = dict_apply(data, torch.from_numpy)
-        return torch_data
+        if self.transforms is not None and self.rgb_keys:
+            data = self._apply_color_jitter(data)
+
+        return dict_apply(data, torch.from_numpy)
 
 
 def minimum_enclosing_circle(P, r, eps=1e-9):
@@ -547,8 +352,8 @@ if __name__ == "__main__":
     zarr_configs = [
         {
             "path": "data/diffusion_experiments/planar_pushing/sim_sim_tee_data_carbon_large.zarr",
-            "max_train_episodes": 160,
             "sampling_weight": 1.0,
+            "max_train_episodes": 10,
         }
     ]
     n_obs_steps = 2
@@ -567,15 +372,15 @@ if __name__ == "__main__":
         pad_before=1,
         pad_after=7,
         seed=42,
-        val_ratio=0.05,
+        val_ratio=0.0625,
         low_pass_on_wrist=True,
-        # color_jitter=color_jitter
+        color_jitter=color_jitter
     )
 
     dataset.__getitem__(0)
     print("=" * 60)
-    print("DATASET SIZE INFORMATION")
-    print("Initialized dataset")
+    print("DATASET INFORMATION")
+    print(f"Zarr structure: {zarr.tree(zarr.open_group(zarr_configs[0]['path'], mode='r'))}")
     print(f"Number of datasets: {dataset.get_num_datasets()}")
     print(f"Total episodes (train + val): {dataset.get_num_episodes()}")
     print(f"Training dataset length (after applying max_train_episodes) (number of training samples): {len(dataset)}")
@@ -583,7 +388,6 @@ if __name__ == "__main__":
     # Print detailed information for each dataset
     for i in range(dataset.get_num_datasets()):
         print(f"\nDataset {i}:")
-        print(f"  Zarr path: {dataset.zarr_paths[i]}")
         print(f"  Total episodes: {dataset.get_num_episodes(index=i)}")
         print(f"  Training episodes: {np.sum(dataset.train_masks[i])}")
         print(f"  Validation episodes: {np.sum(dataset.val_masks[i])}")
