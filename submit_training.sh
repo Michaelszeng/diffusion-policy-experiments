@@ -20,6 +20,7 @@ DATE=`date +"%Y.%m.%d"`
 TIME=`date +"%H.%M.%S"`
 export HYDRA_FULL_ERROR=1
 
+# EXPERIMENT_CLASS=planar_pushing
 # EXPERIMENT_NAME=2_obs
 
 # EXPERIMENT_NAME=2_obs_300_data
@@ -40,13 +41,12 @@ export HYDRA_FULL_ERROR=1
 # EXPERIMENT_NAME=14_obs_32_horizon_idle_frames_pruned
 # EXPERIMENT_NAME=18_obs_32_horizon_idle_frames_pruned
 
-CONFIG_DIR=config/planar_pushing
-CONFIG_NAME=${EXPERIMENT_NAME}.yaml
-HYDRA_RUN_DIR=data/outputs/planar_pushing/${EXPERIMENT_NAME}
+EXPERIMENT_CLASS=furniture_bench
+EXPERIMENT_NAME=2_obs_one_leg_teleop
 
-# CONFIG_DIR=config/maniskill
-# CONFIG_NAME=2_obs_state_based.yaml
-# HYDRA_RUN_DIR=data/outputs/maniskill/2_obs_state_based
+CONFIG_DIR=config/${EXPERIMENT_CLASS}
+CONFIG_NAME=${EXPERIMENT_NAME}.yaml
+HYDRA_RUN_DIR=data/outputs/${EXPERIMENT_CLASS}/${EXPERIMENT_NAME}
 
 echo "[submit_training.sh] Config name: $CONFIG_NAME"
 echo "[submit_training.sh] Hydra run dir: $HYDRA_RUN_DIR"
