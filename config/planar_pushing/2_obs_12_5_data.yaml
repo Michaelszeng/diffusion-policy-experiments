@@ -41,7 +41,6 @@ logging:  # wandb logging configuration
   id: null
   name: 2_obs_12_5%_data
   project: t_pushing
-  resume: true
 multi_run:
   wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_hybrid_pusher_12_5%_data
   run_dir: data/outputs/${multi_run.wandb_name_base}
