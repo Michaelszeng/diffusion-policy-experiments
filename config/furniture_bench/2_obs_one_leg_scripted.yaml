@@ -39,11 +39,10 @@ exp_name: defaults
 logging:  # wandb logging configuration
   group: null
   id: null
-  name: 2_obs
-  project: t_pushing
-  resume: true
+  name: furniture_bench_2_obs_one_leg_scripted
+  project: furniture_bench_one_leg
 multi_run:
-  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_hybrid_pusher
+  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_hybrid_furniture_bench_2_obs_one_leg_scripted
   run_dir: data/outputs/${multi_run.wandb_name_base}
 horizon: ${eval:${n_obs_steps} + 14}
 n_action_steps: 8  # Inference-only parameter
@@ -118,7 +117,7 @@ task:
     pad_before: ${eval:${task.dataset.n_obs_steps} - 1}
     seed: ${seed}
     zarr_configs:
-    - path: /home/michzeng/benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/scripted/low/success.zarr
+    - path: ../benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/scripted/low/success.zarr
       max_train_episodes: null
       sampling_weight: null
       val_ratio: 0.0625

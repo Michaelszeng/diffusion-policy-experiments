@@ -7,7 +7,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=40
-#SBATCH --mem=128G
+#SBATCH --mem=256G
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/slurm-%j.out
 #SBATCH --error=logs/slurm-%j.err
@@ -18,8 +18,9 @@
 # ============================================================================
 # Training hyperparameters
 # ============================================================================
-BATCH_SIZE=256
-NUM_WORKERS=8
+BATCH_SIZE=512
+NUM_WORKERS=16
+LR=8e-4
 # ============================================================================
 
 DATE=`date +"%Y.%m.%d"`
@@ -34,7 +35,8 @@ echo "SLURM_SUBMIT_DIR: $SLURM_SUBMIT_DIR"
 # --- Environment Setup ---
 echo "Changing directory to $SLURM_SUBMIT_DIR"
 cd "$SLURM_SUBMIT_DIR" || { echo "Failed to change directory to $SLURM_SUBMIT_DIR"; exit 1; }
-source $(poetry env info --path)/bin/activate
+# Load venv environment
+source env/bin/activate
 
 mkdir -p logs
 
@@ -47,7 +49,7 @@ export TORCH_LOGS="recompiles"
 export HYDRA_FULL_ERROR=1
 
 # ============================================================================
-# Experiment configuration — uncomment the desired experiment
+# Experiment configuration
 # ============================================================================
 
 # --- Planar Pushing ---
@@ -88,6 +90,7 @@ echo "Config name:   $CONFIG_NAME"
 echo "Hydra run dir: $HYDRA_RUN_DIR"
 echo "BATCH_SIZE:    $BATCH_SIZE"
 echo "NUM_WORKERS:   $NUM_WORKERS"
+echo "LR:            $LR"
 echo "=========================================="
 
 export PYTHONPATH=$PWD:$PYTHONPATH
@@ -98,3 +101,4 @@ python train.py \
     hydra.run.dir=$HYDRA_RUN_DIR \
     dataloader.batch_size=$BATCH_SIZE \
     dataloader.num_workers=$NUM_WORKERS \
+    optimizer.lr=$LR \
