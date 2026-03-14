@@ -113,7 +113,7 @@ class ManiskillLowdimDataset(BaseLowdimDataset):
             sampling_weight = h5_config.get("sampling_weight", None)
 
             # Create replay buffer from H5 file
-            replay_buffer = self._create_replay_buffer_from_h5(h5_path, keys)
+            replay_buffer = self.load_replay_buffer(h5_path, keys, h5_config)
             self.replay_buffers.append(replay_buffer)
             n_episodes = replay_buffer.n_episodes
 
@@ -151,8 +151,9 @@ class ManiskillLowdimDataset(BaseLowdimDataset):
         # Normalize sample probabilities
         self.sample_probabilities = self._normalize_sample_probabilities(self.sample_probabilities)
 
-    def _create_replay_buffer_from_h5(self, h5_path: str, keys: List[str]) -> ReplayBuffer:
-        """Convert ManiSkill H5 trajectory file to ReplayBuffer format"""
+    def load_replay_buffer(self, path: str, keys: List[str], config: Dict) -> ReplayBuffer:
+        """Load one ManiSkill H5 file into a ReplayBuffer."""
+        h5_path = path
         print(f"Loading ManiSkill lowdim dataset from: {h5_path}")
 
         replay_buffer = ReplayBuffer.create_empty_numpy()
@@ -320,6 +321,12 @@ class ManiskillLowdimDataset(BaseLowdimDataset):
             return num_episodes
         else:
             return self.replay_buffers[index].n_episodes
+
+    def store_replay_buffer(self, replay_buffer, path: str) -> None:
+        """
+        Write the ReplayBuffer back to an HDF5 file with traj_N trajectory keys.
+        """
+        raise NotImplementedError()
 
     def __len__(self) -> int:
         length = 0

@@ -49,6 +49,15 @@ Obtain `sim_sim_tee_data_carbon_large.zarr` from Adam Wei. Place in `data/diffus
 
 ## Running
 
+### Pre-processing:
+First, ensure your dataset is in the diffusion policy Zarr format. You need to develop/run the appropriate dataset conversion script to make this so.
+
+Then, to prune idle frames from the dataset:
+```bash
+python prune_idle.py data/diffusion_experiments/planar_pushing/sim_sim_tee_data_carbon_large.zarr --obs-horizon 3 --idle-tolerance 0.003
+```
+
+
 ### Running locally:
 ```bash
 python train.py --config-dir=config/planar_pushing --config-name=2_obs.yaml hydra.run.dir=data/outputs/planar_pushing/2_obs/

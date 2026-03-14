@@ -121,7 +121,7 @@ class ManiskillDataset(BaseImageDataset):
             sampling_weight = h5_config.get("sampling_weight", None)
 
             # Create replay buffer from H5 file
-            replay_buffer = self._create_replay_buffer_from_h5(h5_path, keys)
+            replay_buffer = self.load_replay_buffer(h5_path, keys, h5_config)
             self.replay_buffers.append(replay_buffer)
             n_episodes = replay_buffer.n_episodes
 
@@ -172,8 +172,9 @@ class ManiskillDataset(BaseImageDataset):
         self.use_one_hot_encoding = use_one_hot_encoding
         self.one_hot_encoding = None  # if val dataset, this will not be None
 
-    def _create_replay_buffer_from_h5(self, h5_path: str, keys: List[str]) -> ReplayBuffer:
-        """Convert ManiSkill H5 trajectory file to ReplayBuffer format"""
+    def load_replay_buffer(self, path: str, keys: List[str], config: Dict) -> ReplayBuffer:
+        """Load one ManiSkill H5 file into a ReplayBuffer."""
+        h5_path = path
         print(f"Loading ManiSkill dataset from: {h5_path}")
 
         replay_buffer = ReplayBuffer.create_empty_numpy()
@@ -279,6 +280,12 @@ class ManiskillDataset(BaseImageDataset):
 
     def _lowdim_key_map(self):
         return {"action": "action", "agent_pos": "state"}
+
+    def store_replay_buffer(self, replay_buffer, path: str) -> None:
+        """
+        Write the ReplayBuffer back to an HDF5 file with traj_N trajectory keys.
+        """
+        raise NotImplementedError()
 
     def __len__(self) -> int:
         length = 0

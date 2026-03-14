@@ -4,9 +4,11 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+import zarr
 from torchvision import transforms
 
 from diffusion_policy.common.normalize_util import get_image_range_normalizer
+from diffusion_policy.common.replay_buffer import ReplayBuffer
 from diffusion_policy.common.sampler import ImprovedDatasetSampler, downsample_mask, get_val_mask
 from diffusion_policy.model.common.normalizer import LinearNormalizer
 
@@ -32,6 +34,14 @@ class BaseLowdimDataset(torch.utils.data.Dataset):
         raise NotImplementedError()
 
     def get_all_actions(self) -> torch.Tensor:
+        raise NotImplementedError()
+
+    def load_replay_buffer(self, path: str, keys: List[str], config: Dict):
+        """Load data from path into a ReplayBuffer for one dataset config."""
+        raise NotImplementedError()
+
+    def store_replay_buffer(self, replay_buffer, path: str) -> None:
+        """Save a ReplayBuffer to disk in the dataset's native on-disk format."""
         raise NotImplementedError()
 
     def __len__(self) -> int:
@@ -65,6 +75,10 @@ class BaseImageDataset(torch.utils.data.Dataset):
         shape_meta (dict): Shape metadata for actions and observations.
         rgb_keys (list[str]): Observation keys whose values are RGB images.
         transforms (Optional[ColorJitter]): Color jitter transform, or None.
+
+    Subclasses must implement:
+        load_replay_buffer(path, keys, config)  - load one data file into a ReplayBuffer
+        store_replay_buffer(replay_buffer, path) - save a ReplayBuffer back to the native format
 
     Concrete methods provided here:
         get_default_color_jitter - builds a ColorJitter from a config dict
@@ -192,6 +206,14 @@ class BaseImageDataset(torch.utils.data.Dataset):
             normalizer[key] = get_image_range_normalizer()
         return normalizer
 
+    def load_replay_buffer(self, path: str, keys: List[str], config: Dict):
+        """Load data from path into a ReplayBuffer for one dataset config."""
+        raise NotImplementedError()
+
+    def store_replay_buffer(self, replay_buffer, path: str) -> None:
+        """Save a ReplayBuffer to disk in the dataset's native on-disk format."""
+        raise NotImplementedError()
+
     def __len__(self) -> int:
         return 0
 
@@ -209,8 +231,13 @@ class BaseZarrImageDataset(BaseImageDataset):
     """
     Intermediate base class for zarr-backed datasets.
 
-    Adds one extra required attribute beyond ``BaseImageDataset``:
-        zarr_paths (list[str]): Absolute paths to each zarr store.
+    Subclasses must implement:
+        _get_buffer_keys()              - list of keys to load from the zarr store
+        load_replay_buffer(path, keys, config) - open one zarr store as a ReplayBuffer
+
+    __init__ handles everything else: validation, key setup, the per-config loop
+    (masks, samplers, sample probabilities), and final attribute assignment.
+    Subclasses call super().__init__() and add any unique post-init state.
 
     Concrete methods added here:
         _validate_zarr_configs  - validates zarr config dicts
@@ -218,6 +245,80 @@ class BaseZarrImageDataset(BaseImageDataset):
         get_validation_dataset  - shallow-copies self narrowed to one val dataset
         __len__                 - total number of samples across all samplers
     """
+
+    def __init__(
+        self,
+        zarr_configs: List[Dict],
+        shape_meta: Dict,
+        horizon: int = 1,
+        n_obs_steps: Optional[int] = None,
+        pad_before: int = 0,
+        pad_after: int = 0,
+        seed: int = 42,
+        val_ratio: float = 0.0,
+        color_jitter: Optional[Dict] = None,
+    ):
+        super().__init__()
+        self._validate_zarr_configs(zarr_configs)
+
+        obs_meta = shape_meta["obs"]
+        self.rgb_keys = [k for k, v in obs_meta.items() if v.get("type") == "rgb"]
+        self.lowdim_keys = [k for k, v in obs_meta.items() if v.get("type") != "rgb"]
+        self.shape_meta = shape_meta
+
+        keys = self._get_buffer_keys()
+        key_first_k = self._build_key_first_k(keys, n_obs_steps, horizon)
+
+        self.num_datasets = len(zarr_configs)
+        self.replay_buffers = []
+        self.train_masks: List[np.ndarray] = []
+        self.val_masks: List[np.ndarray] = []
+        self.samplers = []
+        self.sample_probabilities = np.zeros(len(zarr_configs))
+        self.zarr_paths: List[str] = []
+
+        for i, cfg in enumerate(zarr_configs):
+            zarr_path = os.path.expanduser(cfg["path"])
+            buf = self.load_replay_buffer(zarr_path, keys, cfg)
+            train_mask, val_mask = self._build_episode_masks(
+                n_episodes=buf.n_episodes,
+                val_ratio=cfg.get("val_ratio", val_ratio),
+                max_train_episodes=cfg.get("max_train_episodes", None),
+                seed=seed,
+            )
+            self.replay_buffers.append(buf)
+            self.zarr_paths.append(zarr_path)
+            self.train_masks.append(train_mask)
+            self.val_masks.append(val_mask)
+            self.samplers.append(ImprovedDatasetSampler(
+                replay_buffer=buf,
+                sequence_length=horizon,
+                shape_meta=shape_meta,
+                pad_before=pad_before,
+                pad_after=pad_after,
+                episode_mask=train_mask,
+                key_first_k=key_first_k,
+            ))
+            self.sample_probabilities[i] = cfg.get("sampling_weight") or np.sum(train_mask)
+
+        self.sample_probabilities = self._normalize_sample_probabilities(self.sample_probabilities)
+        self.horizon = horizon
+        self.pad_before = pad_before
+        self.pad_after = pad_after
+        self.n_obs_steps = n_obs_steps
+        self.transforms = self.get_default_color_jitter(color_jitter)
+
+    def _get_buffer_keys(self) -> List[str]:
+        """Return the list of keys to load from the zarr store."""
+        raise NotImplementedError()
+
+    def load_replay_buffer(self, path: str, keys: List[str], config: Dict) -> ReplayBuffer:
+        """Load a standard zarr store (data/meta layout) into memory as a ReplayBuffer."""
+        return ReplayBuffer.copy_from_path(zarr_path=path, store=zarr.MemoryStore(), keys=keys)
+
+    def store_replay_buffer(self, replay_buffer, path: str) -> None:
+        """Save a ReplayBuffer to a zarr directory store (standard data/meta layout)."""
+        replay_buffer.save_to_path(os.path.expanduser(path))
 
     @staticmethod
     def _validate_zarr_configs(zarr_configs: List[Dict]) -> None:

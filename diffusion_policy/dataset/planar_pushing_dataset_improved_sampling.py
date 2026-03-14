@@ -2,16 +2,15 @@ import math
 import os
 import random
 import time
-from typing import Dict
+from typing import Dict, List
 
+import cv2
 import numpy as np
 import torch
 import zarr
 from diffusion_policy.common.pytorch_util import dict_apply
 from diffusion_policy.common.replay_buffer import ReplayBuffer
-from diffusion_policy.common.sampler import ImprovedDatasetSampler
 from diffusion_policy.dataset.base_dataset import BaseZarrImageDataset, gaussian_kernel
-
 
 class PlanarPushingDataset(BaseZarrImageDataset):
     """
@@ -36,9 +35,17 @@ class PlanarPushingDataset(BaseZarrImageDataset):
         low_pass_on_wrist=False,
         low_pass_on_overhead=False,
     ):
-        super().__init__()
-        self._validate_zarr_configs(zarr_configs)
-
+        super().__init__(
+            zarr_configs=zarr_configs,
+            shape_meta=shape_meta,
+            horizon=horizon,
+            n_obs_steps=n_obs_steps,
+            pad_before=pad_before,
+            pad_after=pad_after,
+            seed=seed,
+            val_ratio=val_ratio,
+            color_jitter=color_jitter,
+        )
         self.low_pass_on_wrist = low_pass_on_wrist
         if low_pass_on_wrist:
             self.wrist_kernel = gaussian_kernel(kernel_size=9, sigma=3, channels=3)
@@ -46,83 +53,8 @@ class PlanarPushingDataset(BaseZarrImageDataset):
         if low_pass_on_overhead:
             self.overhead_kernel = gaussian_kernel(kernel_size=9, sigma=3, channels=3)
 
-        # Set up dataset keys
-        self.rgb_keys = []
-        obs_shape_meta = shape_meta["obs"]
-        for key, attr in obs_shape_meta.items():
-            type = attr.get("type", "")
-            if type == "rgb":
-                self.rgb_keys.append(key)
-
-        keys = self.rgb_keys + ["state", "action", "target"]
-
-        # Trick for saving RAM
-        key_first_k = self._build_key_first_k(keys, n_obs_steps, horizon)
-
-        # Load in all the zarr datasets
-        self.num_datasets = len(zarr_configs)
-        self.replay_buffers = []
-        self.train_masks = []
-        self.val_masks = []
-        self.samplers = []
-        self.sample_probabilities = np.zeros(len(zarr_configs))
-        self.zarr_paths = []
-
-        for i, zarr_config in enumerate(zarr_configs):
-            # Extract config info
-            zarr_path = os.path.expanduser(zarr_config["path"])
-            max_train_episodes = zarr_config.get("max_train_episodes", None)
-            sampling_weight = zarr_config.get("sampling_weight", None)
-
-            # Set up replay buffer
-            self.replay_buffers.append(
-                ReplayBuffer.copy_from_path(zarr_path=zarr_path, store=zarr.MemoryStore(), keys=keys)
-            )
-            n_episodes = self.replay_buffers[-1].n_episodes
-
-            # Set up masks
-            dataset_val_ratio = zarr_config.get("val_ratio", val_ratio)
-            train_mask, val_mask = self._build_episode_masks(
-                n_episodes=n_episodes,
-                val_ratio=dataset_val_ratio,
-                max_train_episodes=max_train_episodes,
-                seed=seed,
-            )
-            self.train_masks.append(train_mask)
-            self.val_masks.append(val_mask)
-
-            # Set up sampler
-            self.samplers.append(
-                ImprovedDatasetSampler(
-                    replay_buffer=self.replay_buffers[-1],
-                    sequence_length=horizon,
-                    shape_meta=shape_meta,
-                    pad_before=pad_before,
-                    pad_after=pad_after,
-                    episode_mask=train_mask,
-                    key_first_k=key_first_k,
-                )
-            )
-
-            # Set up sample probabilities and zarr paths
-            if sampling_weight is not None:
-                self.sample_probabilities[i] = sampling_weight
-            else:
-                self.sample_probabilities[i] = np.sum(train_mask)
-            self.zarr_paths.append(zarr_path)
-
-        # Normalize sample_probabilities
-        self.sample_probabilities = self._normalize_sample_probabilities(self.sample_probabilities)
-
-        # Set up color jitter
-        self.transforms = self.get_default_color_jitter(color_jitter)  # CURRENTLY UNUSED
-
-        # Load other variables
-        self.horizon = horizon
-        self.pad_before = pad_before
-        self.pad_after = pad_after
-        self.n_obs_steps = n_obs_steps
-        self.shape_meta = shape_meta
+    def _get_buffer_keys(self) -> List[str]:
+        return self.rgb_keys + ["state", "action", "target"]
 
     def _lowdim_key_map(self):
         return {"action": "action", "agent_pos": "state", "target": "target"}
@@ -351,7 +283,7 @@ if __name__ == "__main__":
     }
     zarr_configs = [
         {
-            "path": "data/diffusion_experiments/planar_pushing/sim_sim_tee_data_carbon_large.zarr",
+            "path": "data/diffusion_experiments/planar_pushing/sim_sim_tee_data_carbon_large_pruned_obs_horizon_3_idle_tol_0_003.zarr",
             "sampling_weight": 1.0,
             "max_train_episodes": 10,
         }
@@ -359,7 +291,7 @@ if __name__ == "__main__":
     n_obs_steps = 2
     color_jitter = {
         "brightness": 0.15,
-        # 'contrast': 0.5,
+        "contrast": 0.15,
         "saturation": 0.15,
         "hue": 0.15,
     }
@@ -423,24 +355,7 @@ if __name__ == "__main__":
         print(f"Sample target : {sample['target']}")
         print()
         print("Press any key to continue. Ctrl+\\ to exit.\n")
-
-        # Just display camera (wrist and overhead) images
-        for key, attr in sample["obs"].items():
-            if key == "agent_pos":
-                continue
-
-            for i in range(n_obs_steps):
-                image_array = attr[i].detach().numpy().transpose(1, 2, 0)
-
-                # Convert the RGB array to BGR
-                image_array[:, :, 0], image_array[:, :, 2] = image_array[:, :, 2], image_array[:, :, 0].copy()
-                # image_array = cv2.cvtColor(image_array, cv2.COLOR_RGB2BGR)
-
-                # Display the image using OpenCV
-                # cv2.imshow(f"{key}_{i}", image_array)
-                # cv2.waitKey(0)  # Wait for a key press to close the image window
-                # cv2.destroyAllWindows()
-
+        
     # train_dataloader = DataLoader(
     #     dataset,
     #     batch_size=64,
