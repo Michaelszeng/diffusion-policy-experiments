@@ -4,10 +4,13 @@
 SOURCE_DIR="data/outputs/furniture_bench/"
 
 # Target directory on the target computer
-TARGET_USER="michzeng"
-
-TARGET_HOST="slurm-login.csail.mit.edu"
 TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/furniture_bench/2_obs_one_leg_scripted"
+
+
+####################################################################################
+
+TARGET_USER="michzeng"
+TARGET_HOST="slurm-login.csail.mit.edu"
 
 # Rsync command with -avh flags
 mkdir -p "$SOURCE_DIR"
