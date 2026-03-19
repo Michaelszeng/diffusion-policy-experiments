@@ -84,12 +84,11 @@ class TrainDiffusionUnetTimmWorkspaceNoEnv(BaseWorkspace):
             self.ema_model = copy.deepcopy(self.model)
 
         # Support optional per-encoder learning rate scaling
-        self.encoder_lr_scale = getattr(cfg.training, "encoder_lr_scale", 1.0)
-        self.use_variable_lr = getattr(cfg.training, "use_variable_lr", False)
+        self.encoder_lr_scale = getattr(cfg.training, "encoder_lr_scale", None)
 
-        if self.use_variable_lr and hasattr(self.model, "obs_encoder"):
+        if self.encoder_lr_scale is not None and self.encoder_lr_scale != 1.0 and hasattr(self.model, "obs_encoder"):
             print(
-                f"Using variable learning rate: encoder LR = {cfg.optimizer.lr * self.encoder_lr_scale:.6f}, "
+                f"Using scaled encoder LR: encoder LR = {cfg.optimizer.lr * self.encoder_lr_scale:.6f}, "
                 f"rest = {cfg.optimizer.lr:.6f}"
             )
             encoder_params = list(self.model.obs_encoder.parameters())
