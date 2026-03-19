@@ -136,25 +136,29 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
     def run(self):
         cfg = copy.deepcopy(self.cfg)
 
-        # resume training
+        # Resume training
         if cfg.training.resume:
-            lastest_ckpt_path = self.get_checkpoint_path()
-            if lastest_ckpt_path.is_file():
-                print(f"Resuming from checkpoint {lastest_ckpt_path}")
-                self.load_checkpoint(path=lastest_ckpt_path)
-                # self.epoch is loaded with the last completed epoch
-                # the current epoch is the next epoch (hence += 1)
-                self.epoch += 1
-            elif cfg.training.checkpoint_path is not None:
+            # Load user-specified checkpoint if provided
+            if getattr(cfg.training, "checkpoint_path", None) is not None:
                 ckpt_path = pathlib.Path(cfg.training.checkpoint_path)
                 if ckpt_path.is_file():
                     print(f"Resuming from user-specified checkpoint {ckpt_path}")
                     self.load_checkpoint(path=ckpt_path)
                     self.epoch += 1
                 else:
-                    print(f"Resume requested but specified checkpoint {ckpt_path} not found. Starting from scratch.")
+                    print(f"ATTENTION: Resume requested but checkpoint {ckpt_path} not found. Starting from scratch.")
+            # Load latest checkpoint otherwise
             else:
-                print(f"Resume requested but checkpoint {lastest_ckpt_path} not found. Starting from scratch.")
+                lastest_ckpt_path = self.get_checkpoint_path()
+                if lastest_ckpt_path.is_file():
+                    print(f"Resuming from checkpoint {lastest_ckpt_path}")
+                    self.load_checkpoint(path=lastest_ckpt_path)
+                    # self.epoch is loaded with the last completed epoch
+                    # the current epoch is the next epoch (hence += 1)
+                    self.epoch += 1
+                else:
+                    print(f"ATTENTION: Resume requested but no checkpoint supplied by user and latest checkpoint "
+                    f"{lastest_ckpt_path} not found. Starting from scratch.")
 
         # configure dataset and save normalizer
         dataset: BaseImageDataset
