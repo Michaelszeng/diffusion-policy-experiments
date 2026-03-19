@@ -47,10 +47,11 @@ class DataParallelWrapper(DataParallel):
 
 
 class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
-    include_keys = ["global_step", "epoch"]
+    include_keys = ["global_step", "epoch", "topk_managers"]  # Attributes to save as keys in ckpt
 
     def __init__(self, cfg: OmegaConf, output_dir=None):
         super().__init__(cfg, output_dir=output_dir)
+        self.topk_managers = None
 
         # set seed
         seed = cfg.training.seed
@@ -242,29 +243,57 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
 
         # configure checkpoint
         assert cfg.training.checkpoint_every % cfg.training.val_every == 0
-        if not isinstance(cfg.checkpoint, ListConfig):  # Single checkpoint manager
-            # configure single checkpoint manager
-            topk_managers = [
-                TopKCheckpointManager(
-                    save_dir=os.path.join(self.output_dir, "checkpoints"),
-                    **cfg.checkpoint.topk,
-                )
-            ]
-            save_last_ckpt = cfg.checkpoint.save_last_ckpt
-            save_last_snapshot = cfg.checkpoint.save_last_snapshot
-        else:  # Multiple checkpoint managers
-            topk_managers = []
-            save_last_ckpt = False
-            save_last_snapshot = False
-            for ckpt_cfg in cfg.checkpoint:
-                topk_managers.append(
+        
+        # Determine whether to save the last checkpoint and snapshot based on config
+        save_last_ckpt = cfg.checkpoint.save_last_ckpt
+        save_last_snapshot = cfg.checkpoint.save_last_snapshot
+
+        # Initialize new topk managers if starting from scratch or loading an old checkpoint without them
+        if self.topk_managers is None:
+            if not isinstance(cfg.checkpoint.topk, ListConfig):  # Single checkpoint manager
+                # Configure single checkpoint manager
+                self.topk_managers = [
                     TopKCheckpointManager(
                         save_dir=os.path.join(self.output_dir, "checkpoints"),
-                        **ckpt_cfg.topk,
+                        **cfg.checkpoint.topk,
                     )
-                )
-                save_last_ckpt = save_last_ckpt or ckpt_cfg.save_last_ckpt
-                save_last_snapshot = save_last_snapshot or ckpt_cfg.save_last_snapshot
+                ]
+            else:  # Multiple checkpoint managers
+                self.topk_managers = []
+                for topk_cfg in cfg.checkpoint.topk:
+                    self.topk_managers.append(
+                        TopKCheckpointManager(
+                            save_dir=os.path.join(self.output_dir, "checkpoints"),
+                            **topk_cfg,
+                        )
+                    )
+        # Update loaded topk managers with new config (e.g. if k changed, or if output_dir changed)
+        # This also loads the topk managers' state, i.e. the paths of the current top k
+        else:
+            if not isinstance(cfg.checkpoint.topk, ListConfig):
+                if len(self.topk_managers) > 0:
+                    self.topk_managers[0].k = cfg.checkpoint.topk.k
+                    self.topk_managers[0].format_str = cfg.checkpoint.topk.format_str
+                    self.topk_managers[0].mode = cfg.checkpoint.topk.mode
+                    self.topk_managers[0].monitor_key = cfg.checkpoint.topk.monitor_key
+                    self.topk_managers[0].save_dir = os.path.join(self.output_dir, "checkpoints")
+            else:
+                for i, topk_cfg in enumerate(cfg.checkpoint.topk):
+                    if i < len(self.topk_managers):
+                        # Update existing manager with potentially new config values
+                        self.topk_managers[i].k = topk_cfg.k
+                        self.topk_managers[i].format_str = topk_cfg.format_str
+                        self.topk_managers[i].mode = topk_cfg.mode
+                        self.topk_managers[i].monitor_key = topk_cfg.monitor_key
+                        self.topk_managers[i].save_dir = os.path.join(self.output_dir, "checkpoints")
+                    else:
+                        # Append new manager if config has more managers than the loaded checkpoint
+                        self.topk_managers.append(
+                            TopKCheckpointManager(
+                                save_dir=os.path.join(self.output_dir, "checkpoints"),
+                                **topk_cfg,
+                            )
+                        )
 
         # device transfer
         device = torch.device(cfg.training.device)
