@@ -45,6 +45,7 @@ r3m = {url = "https://github.com/facebookresearch/r3m/archive/b2334e726887fa0206
 dm-control = "1.0.9"
 drake = "^1.0.0"
 dask = "2024.1.0"
+timm = ">=1.0.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.0.0"

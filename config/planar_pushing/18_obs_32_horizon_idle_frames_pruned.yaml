@@ -46,7 +46,6 @@ multi_run:
   run_dir: data/outputs/${multi_run.wandb_name_base}
 horizon: ${eval:${n_obs_steps} + 14}
 n_action_steps: 8  # Inference-only parameter
-n_latency_steps: 0  # How many timesteps to offset the action predictions back by to account for inference time/latency
 n_obs_steps: 18  # Number of observation steps to condition on
 shape_meta:
   action:

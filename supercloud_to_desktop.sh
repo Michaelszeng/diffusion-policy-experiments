@@ -15,4 +15,4 @@ mkdir -p "$SOURCE_DIR"
 rsync -avh "$TARGET_USER@$TARGET_HOST:$TARGET_DIR" "$SOURCE_DIR"
 
 # Example usage:
-# ./rsync_script.sh
+# ./supercloud_to_desktop.sh

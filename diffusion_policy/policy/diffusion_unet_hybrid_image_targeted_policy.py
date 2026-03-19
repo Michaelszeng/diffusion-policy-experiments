@@ -425,6 +425,8 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         end = start + self.n_action_steps
         action = action_pred[:, start:end]
 
+        # pred_action is the full predicted action sequence; action is a slice beginning after the latest observation
+        # and with length n_action_steps
         result = {"action": action, "action_pred": action_pred}
         return result
 
