@@ -131,6 +131,7 @@ task:
   shape_meta: ${shape_meta} # not used?
 task_name: maniskill
 training:
+  checkpoint_path: null
   checkpoint_every: 5
   debug: false
   device: cuda

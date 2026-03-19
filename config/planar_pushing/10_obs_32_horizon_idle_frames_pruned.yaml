@@ -127,6 +127,7 @@ task:
   shape_meta: ${shape_meta} # not used?
 task_name: planar_pushing
 training:
+  checkpoint_path: null
   checkpoint_every: 5
   debug: false
   device: cuda

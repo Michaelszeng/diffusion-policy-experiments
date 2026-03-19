@@ -145,6 +145,16 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                 # self.epoch is loaded with the last completed epoch
                 # the current epoch is the next epoch (hence += 1)
                 self.epoch += 1
+            elif cfg.training.checkpoint_path is not None:
+                ckpt_path = pathlib.Path(cfg.training.checkpoint_path)
+                if ckpt_path.is_file():
+                    print(f"Resuming from user-specified checkpoint {ckpt_path}")
+                    self.load_checkpoint(path=ckpt_path)
+                    self.epoch += 1
+                else:
+                    print(f"Resume requested but specified checkpoint {ckpt_path} not found. Starting from scratch.")
+            else:
+                print(f"Resume requested but checkpoint {lastest_ckpt_path} not found. Starting from scratch.")
 
         # configure dataset and save normalizer
         dataset: BaseImageDataset
