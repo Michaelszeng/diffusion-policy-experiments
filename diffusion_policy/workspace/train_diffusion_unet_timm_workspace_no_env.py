@@ -54,10 +54,11 @@ class TrainDiffusionUnetTimmWorkspaceNoEnv(BaseWorkspace):
     - No DDIM evaluation path (set eval_mse_DDIM: false in config).
     """
 
-    include_keys = ["global_step", "epoch"]
+    include_keys = ["global_step", "epoch", "topk_managers"]  # Attributes to save as keys in ckpt
 
     def __init__(self, cfg: OmegaConf, output_dir=None):
         super().__init__(cfg, output_dir=output_dir)
+        self.topk_managers = None
 
         seed = cfg.training.seed
         torch.manual_seed(seed)
@@ -110,9 +111,13 @@ class TrainDiffusionUnetTimmWorkspaceNoEnv(BaseWorkspace):
         self.global_step = 0
         self.epoch = 0
 
-        self.use_amp = getattr(cfg.training, "use_amp", False)
-        self.scaler = GradScaler() if self.use_amp else None
-        print(f"Mixed precision training: {'enabled' if self.use_amp else 'disabled'}")
+        # Configure mixed precision training
+        amp_config = getattr(cfg.training, "use_amp", False)
+        self.use_amp = amp_config is not False
+        self.amp_dtype = torch.bfloat16 if amp_config == "bf16" else torch.float16
+        # GradScalar needed for fp16 to scale gradients up before backward pass (due to lack of precision)
+        self.scaler = GradScaler() if (self.use_amp and self.amp_dtype == torch.float16) else None
+        print(f"Mixed precision training: {'enabled' if self.use_amp else 'disabled'} (dtype: {amp_config if self.use_amp else 'N/A'})")
 
     def run(self):
         cfg = copy.deepcopy(self.cfg)
@@ -178,28 +183,55 @@ class TrainDiffusionUnetTimmWorkspaceNoEnv(BaseWorkspace):
         wandb.config.update({"output_dir": self.output_dir})
 
         assert cfg.training.checkpoint_every % cfg.training.val_every == 0
-        if not isinstance(cfg.checkpoint, ListConfig):
-            topk_managers = [
-                TopKCheckpointManager(
-                    save_dir=os.path.join(self.output_dir, "checkpoints"),
-                    **cfg.checkpoint.topk,
-                )
-            ]
-            save_last_ckpt = cfg.checkpoint.save_last_ckpt
-            save_last_snapshot = cfg.checkpoint.save_last_snapshot
-        else:
-            topk_managers = []
-            save_last_ckpt = False
-            save_last_snapshot = False
-            for ckpt_cfg in cfg.checkpoint:
-                topk_managers.append(
+        
+        save_last_ckpt = cfg.checkpoint.save_last_ckpt
+        save_last_snapshot = cfg.checkpoint.save_last_snapshot
+
+        # Initialize new topk managers if starting from scratch or loading an old checkpoint without them
+        if self.topk_managers is None:
+            if not isinstance(cfg.checkpoint.topk, ListConfig):
+                self.topk_managers = [
                     TopKCheckpointManager(
                         save_dir=os.path.join(self.output_dir, "checkpoints"),
-                        **ckpt_cfg.topk,
+                        **cfg.checkpoint.topk,
                     )
-                )
-                save_last_ckpt = save_last_ckpt or ckpt_cfg.save_last_ckpt
-                save_last_snapshot = save_last_snapshot or ckpt_cfg.save_last_snapshot
+                ]
+            else:
+                self.topk_managers = []
+                for topk_cfg in cfg.checkpoint.topk:
+                    self.topk_managers.append(
+                        TopKCheckpointManager(
+                            save_dir=os.path.join(self.output_dir, "checkpoints"),
+                            **topk_cfg,
+                        )
+                    )
+        # Update loaded topk managers with new config (e.g. if k changed, or if output_dir changed)
+        # This also loads the topk managers' state, i.e. the paths of the current top k
+        else:
+            if not isinstance(cfg.checkpoint.topk, ListConfig):
+                if len(self.topk_managers) > 0:
+                    self.topk_managers[0].k = cfg.checkpoint.topk.k
+                    self.topk_managers[0].format_str = cfg.checkpoint.topk.format_str
+                    self.topk_managers[0].mode = cfg.checkpoint.topk.mode
+                    self.topk_managers[0].monitor_key = cfg.checkpoint.topk.monitor_key
+                    self.topk_managers[0].save_dir = os.path.join(self.output_dir, "checkpoints")
+            else:
+                for i, topk_cfg in enumerate(cfg.checkpoint.topk):
+                    if i < len(self.topk_managers):
+                        # Update existing manager with potentially new config values
+                        self.topk_managers[i].k = topk_cfg.k
+                        self.topk_managers[i].format_str = topk_cfg.format_str
+                        self.topk_managers[i].mode = topk_cfg.mode
+                        self.topk_managers[i].monitor_key = topk_cfg.monitor_key
+                        self.topk_managers[i].save_dir = os.path.join(self.output_dir, "checkpoints")
+                    else:
+                        # Append new manager if config has more managers than the loaded checkpoint
+                        self.topk_managers.append(
+                            TopKCheckpointManager(
+                                save_dir=os.path.join(self.output_dir, "checkpoints"),
+                                **topk_cfg,
+                            )
+                        )
 
         val_sampling_batches = [None] * self.num_datasets
 
@@ -231,20 +263,20 @@ class TrainDiffusionUnetTimmWorkspaceNoEnv(BaseWorkspace):
                             batch["obs"][key] = torch.moveaxis(batch["obs"][key], -1, 2) / 255.0
 
                         if self.use_amp:
-                            with autocast(dtype=torch.float16):
+                            with autocast(dtype=self.amp_dtype):
                                 raw_loss = self.model.compute_loss(batch)
                                 loss = raw_loss / cfg.training.gradient_accumulate_every
                         else:
                             raw_loss = self.model.compute_loss(batch)
                             loss = raw_loss / cfg.training.gradient_accumulate_every
 
-                        if self.use_amp:
+                        if self.scaler is not None:
                             self.scaler.scale(loss).backward()
                         else:
                             loss.backward()
 
                         if self.global_step % cfg.training.gradient_accumulate_every == 0:
-                            if self.use_amp:
+                            if self.scaler is not None:
                                 self.scaler.step(self.optimizer)
                                 self.scaler.update()
                                 self.optimizer.zero_grad()
@@ -351,8 +383,8 @@ class TrainDiffusionUnetTimmWorkspaceNoEnv(BaseWorkspace):
 
                     metric_dict = {k.replace("/", "_"): v for k, v in step_log.items()}
                     topk_ckpt_paths = []
-                    for i, topk_manager in enumerate(topk_managers):
-                        protected = self._get_protected_paths(i, topk_managers)
+                    for i, topk_manager in enumerate(self.topk_managers):
+                        protected = self._get_protected_paths(i, self.topk_managers)
                         topk_ckpt_paths.append(topk_manager.get_ckpt_path(metric_dict, protected))
 
                     for topk_ckpt_path in topk_ckpt_paths:

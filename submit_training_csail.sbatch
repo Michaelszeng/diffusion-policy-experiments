@@ -21,8 +21,8 @@
 BATCH_SIZE=768
 NUM_WORKERS=8
 LR=1e-3
-RESUME=True
-CHECKPOINT_PATH="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/furniture_bench/2_obs_one_leg_scripted/checkpoints/epoch=025-val_loss=0.0729-val_ddim_mse=0.027172.ckpt"  # .ckpt file
+RESUME=True  # NOTE: always set to True so that requeueing will automatically resume from the last checkpoint
+CHECKPOINT_PATH=""  # .ckpt file (or empty for latest.ckpt)
 # ============================================================================
 
 DATE=`date +"%Y.%m.%d"`
