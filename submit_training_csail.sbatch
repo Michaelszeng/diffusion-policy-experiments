@@ -7,8 +7,8 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=40
-#SBATCH --mem=256G
-#SBATCH --time=24:00:00
+#SBATCH --mem=384G
+#SBATCH --time=120:00:00
 #SBATCH --output=logs/slurm-%j.out
 #SBATCH --error=logs/slurm-%j.err
 #SBATCH --requeue
@@ -18,9 +18,11 @@
 # ============================================================================
 # Training hyperparameters
 # ============================================================================
-BATCH_SIZE=512
-NUM_WORKERS=16
-LR=8e-4
+BATCH_SIZE=768
+NUM_WORKERS=8
+LR=1e-3
+RESUME=True
+CHECKPOINT_PATH="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/furniture_bench/2_obs_one_leg_scripted/checkpoints/epoch=025-val_loss=0.0729-val_ddim_mse=0.027172.ckpt"  # .ckpt file
 # ============================================================================
 
 DATE=`date +"%Y.%m.%d"`
@@ -91,14 +93,29 @@ echo "Hydra run dir: $HYDRA_RUN_DIR"
 echo "BATCH_SIZE:    $BATCH_SIZE"
 echo "NUM_WORKERS:   $NUM_WORKERS"
 echo "LR:            $LR"
+echo "RESUME:        $RESUME"
+echo "CHECKPOINT_PATH: $CHECKPOINT_PATH"
 echo "=========================================="
 
 export PYTHONPATH=$PWD:$PYTHONPATH
 
-python train.py \
-    --config-dir=$CONFIG_DIR \
-    --config-name=$CONFIG_NAME \
-    hydra.run.dir=$HYDRA_RUN_DIR \
-    dataloader.batch_size=$BATCH_SIZE \
-    dataloader.num_workers=$NUM_WORKERS \
-    optimizer.lr=$LR \
+if [ -z "$CHECKPOINT_PATH" ] || [ "$CHECKPOINT_PATH" == "null" ]; then
+    python train.py \
+        --config-dir=$CONFIG_DIR \
+        --config-name=$CONFIG_NAME \
+        hydra.run.dir=$HYDRA_RUN_DIR \
+        dataloader.batch_size=$BATCH_SIZE \
+        dataloader.num_workers=$NUM_WORKERS \
+        optimizer.lr=$LR \
+        training.resume=$RESUME
+else
+    python train.py \
+        --config-dir=$CONFIG_DIR \
+        --config-name=$CONFIG_NAME \
+        hydra.run.dir=$HYDRA_RUN_DIR \
+        dataloader.batch_size=$BATCH_SIZE \
+        dataloader.num_workers=$NUM_WORKERS \
+        optimizer.lr=$LR \
+        training.resume=$RESUME \
+        training.checkpoint_path=\"$CHECKPOINT_PATH\"
+fi

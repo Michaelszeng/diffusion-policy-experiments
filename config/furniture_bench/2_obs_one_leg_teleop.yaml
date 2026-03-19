@@ -18,16 +18,18 @@ checkpoint:
 dataloader:
   batch_size: 48
   num_workers: 8
-  persistent_workers: false
+  persistent_workers: True
   pin_memory: true
   shuffle: true
+  prefetch_factor: 1
 val_dataloader:
   batch_size: 48
   num_workers: 8
-  persistent_workers: false
+  persistent_workers: True
   pin_memory: true
   drop_last: true  # Drop the last batch if it's not full
   shuffle: true
+  prefetch_factor: 1
 ema:
   _target_: diffusion_policy.model.diffusion.ema_model.EMAModel
   inv_gamma: 1.0
@@ -116,14 +118,23 @@ task:
     pad_before: ${eval:${task.dataset.n_obs_steps} - 1}
     seed: ${seed}
     zarr_configs:
-    - path: ../benchmark-furniturebench-juicer/dataset/imitation-juicer-data-processed-001/processed/sim/one_leg/teleop/low/success.zarr
+    - path: ../benchmark-furniturebench-juicer/dataset/imitation-juicer-data-processed-001/processed/sim/one_leg/teleop/low/success_translated.zarr
       max_train_episodes: null
       sampling_weight: null
       val_ratio: 0.0625
+    - path: ../benchmark-furniturebench-juicer/dataset/processed/diffik/sim/one_leg/teleop/low/success_translated.zarr
+      max_train_episodes: null
+      sampling_weight: null
+      val_ratio: 0.0625
+    # - path: ../benchmark-furniturebench-juicer/dataset/processed/diffik/sim/one_leg/teleop/med/success.zarr
+    #   max_train_episodes: null
+    #   sampling_weight: null
+    #   val_ratio: 0.0625
   name: furniture_bench
   shape_meta: ${shape_meta} # not used?
 task_name: furniture_bench
 training:
+  checkpoint_path: null
   checkpoint_every: 5
   debug: false
   device: cuda
