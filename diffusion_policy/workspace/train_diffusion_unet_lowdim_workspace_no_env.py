@@ -25,6 +25,7 @@ import torch
 import tqdm
 from diffusers.training_utils import EMAModel
 from omegaconf import ListConfig, OmegaConf
+from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
 
 import wandb
@@ -65,6 +66,13 @@ class TrainDiffusionUnetLowdimWorkspaceNoEnv(BaseWorkspace):
 
         self.global_step = 0
         self.epoch = 0
+
+        # configure mixed precision training
+        amp_config = getattr(cfg.training, "use_amp", False)
+        self.use_amp = amp_config is not False
+        self.amp_dtype = torch.bfloat16 if amp_config == "bf16" else torch.float16
+        self.scaler = GradScaler() if (self.use_amp and self.amp_dtype == torch.float16) else None
+        print(f"Mixed precision training: {'enabled' if self.use_amp else 'disabled'} (dtype: {amp_config if self.use_amp else 'N/A'})")
 
     def run(self):
         cfg = copy.deepcopy(self.cfg)
@@ -235,14 +243,28 @@ class TrainDiffusionUnetLowdimWorkspaceNoEnv(BaseWorkspace):
                         batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
 
                         # compute loss
-                        raw_loss = self.model.compute_loss(batch)
-                        loss = raw_loss / cfg.training.gradient_accumulate_every
-                        loss.backward()
+                        if self.use_amp:
+                            with autocast(dtype=self.amp_dtype):
+                                raw_loss = self.model.compute_loss(batch)
+                                loss = raw_loss / cfg.training.gradient_accumulate_every
+                        else:
+                            raw_loss = self.model.compute_loss(batch)
+                            loss = raw_loss / cfg.training.gradient_accumulate_every
+
+                        if self.scaler is not None:
+                            self.scaler.scale(loss).backward()
+                        else:
+                            loss.backward()
 
                         # step optimizer
                         if self.global_step % cfg.training.gradient_accumulate_every == 0:
-                            self.optimizer.step()
-                            self.optimizer.zero_grad()
+                            if self.scaler is not None:
+                                self.scaler.step(self.optimizer)
+                                self.scaler.update()
+                                self.optimizer.zero_grad()
+                            else:
+                                self.optimizer.step()
+                                self.optimizer.zero_grad()
                             lr_scheduler.step()
 
                         # update ema

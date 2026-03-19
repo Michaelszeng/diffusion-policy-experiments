@@ -129,10 +129,13 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
         self.global_step = 0
         self.epoch = 0
 
-        # configure mixed precision training
-        self.use_amp = getattr(cfg.training, "use_amp", False)
-        self.scaler = GradScaler() if self.use_amp else None
-        print(f"Mixed precision training: {'enabled' if self.use_amp else 'disabled'}")
+        # Configure mixed precision training
+        amp_config = getattr(cfg.training, "use_amp", False)
+        self.use_amp = amp_config is not False
+        self.amp_dtype = torch.bfloat16 if amp_config == "bf16" else torch.float16
+        # GradScalar needed for fp16 to scale gradients up before backward pass (due to lack of precision)
+        self.scaler = GradScaler() if (self.use_amp and self.amp_dtype == torch.float16) else None
+        print(f"Mixed precision training: {'enabled' if self.use_amp else 'disabled'} (dtype: {amp_config if self.use_amp else 'N/A'})")
 
     def run(self):
         cfg = copy.deepcopy(self.cfg)
@@ -343,7 +346,7 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
 
                         # Forward pass with optional mixed precision
                         if self.use_amp:
-                            with autocast(dtype=torch.float16):
+                            with autocast(dtype=self.amp_dtype):
                                 pred = self.model(batch, noisy_trajectory, timesteps)
                                 raw_loss = self.model.compute_loss(trajectory, noise, pred)
                                 loss = raw_loss / cfg.training.gradient_accumulate_every
@@ -353,14 +356,14 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                             loss = raw_loss / cfg.training.gradient_accumulate_every
 
                         # Backward pass with optional mixed precision
-                        if self.use_amp:
+                        if self.scaler is not None:
                             self.scaler.scale(loss).backward()
                         else:
                             loss.backward()
 
                         # step optimizer
                         if self.global_step % cfg.training.gradient_accumulate_every == 0:
-                            if self.use_amp:
+                            if self.scaler is not None:
                                 self.scaler.step(self.optimizer)
                                 self.scaler.update()
                                 self.optimizer.zero_grad()

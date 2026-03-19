@@ -119,6 +119,7 @@ task:
   shape_meta: ${shape_meta} # not used?
 task_name: furniture_bench
 training:
+  use_amp: False
   checkpoint_path: null
   checkpoint_every: 5
   debug: false

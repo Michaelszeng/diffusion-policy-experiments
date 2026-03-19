@@ -120,6 +120,7 @@ task:
   shape_meta: ${shape_meta} # not used?
 task_name: planar_pushing
 training:
+  use_amp: False
   checkpoint_every: 5
   debug: false
   device: cuda

@@ -123,6 +123,7 @@ task:
   shape_meta: ${shape_meta} # not used?
 task_name: maniskill_limited_data
 training:
+  use_amp: False
   checkpoint_path: null
   checkpoint_every: 5
   debug: false
