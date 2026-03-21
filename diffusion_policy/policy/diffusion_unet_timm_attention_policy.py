@@ -42,7 +42,6 @@ class DiffusionUnetTimmAttentionPolicy(BaseImagePolicy):
         use_modality_emb=True,
         use_range_emb=True,
         input_pertub=0.1,
-        train_diffusion_n_samples=1,
         **kwargs,
     ):
         super().__init__()
@@ -85,7 +84,6 @@ class DiffusionUnetTimmAttentionPolicy(BaseImagePolicy):
         self.action_dim = action_dim
         self.prediction_horizon = horizon
         self.input_pertub = input_pertub
-        self.train_diffusion_n_samples = int(train_diffusion_n_samples)
         self.kwargs = kwargs
 
         if num_DDPM_inference_steps is None:
@@ -102,8 +100,8 @@ class DiffusionUnetTimmAttentionPolicy(BaseImagePolicy):
 
     def conditional_sample(
         self,
-        condition_data,
-        condition_mask,
+        inpaint_data,
+        inpaint_mask,
         global_cond=None,
         temporal_positions=None,
         modality_indices=None,
@@ -120,14 +118,19 @@ class DiffusionUnetTimmAttentionPolicy(BaseImagePolicy):
             scheduler.set_timesteps(self.num_inference_steps)
 
         trajectory = torch.randn(
-            size=condition_data.shape,
-            dtype=condition_data.dtype,
-            device=condition_data.device,
+            size=inpaint_data.shape,
+            dtype=inpaint_data.dtype,
+            device=inpaint_data.device,
             generator=generator,
         )
 
         for t in scheduler.timesteps.to(trajectory.device).long():
-            trajectory = torch.where(condition_mask, condition_data, trajectory)
+            # Inpaint: overwrite known positions with correctly-noised inpaint values so
+            # the UNet sees a consistent noise level across the whole trajectory.
+            if inpaint_mask.any():
+                t_batch = torch.full((inpaint_data.shape[0],), t, device=inpaint_data.device, dtype=torch.long)
+                noised_inpaint = scheduler.add_noise(inpaint_data, torch.randn_like(inpaint_data), t_batch)
+                trajectory = torch.where(inpaint_mask, noised_inpaint, trajectory)
             model_output = self.model(
                 sample=trajectory,
                 timestep=t,
@@ -140,33 +143,40 @@ class DiffusionUnetTimmAttentionPolicy(BaseImagePolicy):
                 model_output, t, trajectory, generator=generator, **kwargs
             ).prev_sample
 
-        trajectory = torch.where(condition_mask, condition_data, trajectory)
+        # Final override: snap known positions to exact clean values after the last denoising step
+        trajectory = torch.where(inpaint_mask, inpaint_data, trajectory)
         return trajectory
 
     def predict_action(self, obs_dict: Dict[str, torch.Tensor], use_DDIM=False, **kwargs) -> Dict[str, torch.Tensor]:
         assert "past_action" not in obs_dict
 
-        nobs = self.normalizer.normalize(obs_dict)
-        B = next(iter(nobs.values())).shape[0]
-        tokens, positions, modalities, ranges = self._encode_obs(nobs)
+        mixed_precision = getattr(self, "mixed_precision", None) or "no"
+        with torch.autocast(
+            device_type=self.device.type,
+            dtype=torch.bfloat16 if mixed_precision == "bf16" else torch.float16,
+            enabled=mixed_precision != "no",
+        ):
+            nobs = self.normalizer.normalize(obs_dict)
+            B = next(iter(nobs.values())).shape[0]
+            tokens, positions, modalities, ranges = self._encode_obs(nobs)
 
-        cond_data = torch.zeros(
-            B, self.prediction_horizon, self.action_dim, device=self.device, dtype=self.dtype
-        )
-        cond_mask = torch.zeros_like(cond_data, dtype=torch.bool)
+            inpaint_data = torch.zeros(
+                B, self.prediction_horizon, self.action_dim, device=self.device, dtype=self.dtype
+            )
+            inpaint_mask = torch.zeros_like(inpaint_data, dtype=torch.bool)
 
-        nsample = self.conditional_sample(
-            condition_data=cond_data,
-            condition_mask=cond_mask,
-            global_cond=tokens,
-            temporal_positions=positions,
-            modality_indices=modalities,
-            range_indices=ranges,
-            use_ddim=use_DDIM,
-            **self.kwargs,
-        )
-        assert nsample.shape == (B, self.prediction_horizon, self.action_dim)
-        return {"action_pred": self.normalizer["action"].unnormalize(nsample)}
+            nsample = self.conditional_sample(
+                inpaint_data=inpaint_data,
+                inpaint_mask=inpaint_mask,
+                global_cond=tokens,
+                temporal_positions=positions,
+                modality_indices=modalities,
+                range_indices=ranges,
+                use_ddim=use_DDIM,
+                **self.kwargs,
+            )
+            assert nsample.shape == (B, self.prediction_horizon, self.action_dim)
+            return {"action_pred": self.normalizer["action"].unnormalize(nsample)}
 
     # ── Training ───────────────────────────────────────────────────────────────
 
@@ -179,14 +189,6 @@ class DiffusionUnetTimmAttentionPolicy(BaseImagePolicy):
         nactions = self.normalizer["action"].normalize(batch["action"])
 
         tokens, positions, modalities, ranges = self._encode_obs(nobs)
-
-        if self.train_diffusion_n_samples != 1:
-            n = self.train_diffusion_n_samples
-            tokens = tokens.repeat_interleave(n, dim=0)
-            positions = positions.repeat_interleave(n, dim=0)
-            modalities = modalities.repeat_interleave(n, dim=0)
-            ranges = ranges.repeat_interleave(n, dim=0)
-            nactions = nactions.repeat_interleave(n, dim=0)
 
         trajectory = nactions
         noise = torch.randn(trajectory.shape, device=trajectory.device, dtype=self.dtype)

@@ -38,6 +38,7 @@ class BaseWorkspace:
         exclude_keys=None,
         include_keys=None,
         use_thread=True,
+        state_dict_overrides=None,
     ):
         """
         Checkpoint format:
@@ -73,6 +74,10 @@ class BaseWorkspace:
         - Included as pickle: Any attribute name present in `include_keys`
           (plus "_output_dir" by default) is serialized into the "pickles" map
           using `dill`.
+        - Overridden: If `state_dict_overrides` is provided, it is a dict mapping
+          attribute names to substitute objects whose `.state_dict()` will be
+          called instead of the real attribute's. Useful for saving an unwrapped
+          model in place of a DDP-wrapped one (e.g. after `accelerator.prepare`).
 
         Loading
         - `load_payload` restores entries by calling `load_state_dict` for all
@@ -92,17 +97,25 @@ class BaseWorkspace:
         if include_keys is None:
             include_keys = tuple(self.include_keys) + ("_output_dir",)
 
+        # Join any in-flight save thread before starting a new one to avoid races
+        if self._saving_thread is not None:
+            self._saving_thread.join()
+
         path.parent.mkdir(parents=False, exist_ok=True)
         payload = {"cfg": self.cfg, "state_dicts": dict(), "pickles": dict()}
 
+        overrides = state_dict_overrides or {}
         for key, value in self.__dict__.items():
-            if hasattr(value, "state_dict") and hasattr(value, "load_state_dict"):
+            # Allow callers to substitute a different object for state_dict extraction
+            # (e.g. an unwrapped model in place of a DDP-wrapped one)
+            value_for_sd = overrides.get(key, value)
+            if hasattr(value_for_sd, "state_dict") and hasattr(value_for_sd, "load_state_dict"):
                 # modules, optimizers and samplers etc
                 if key not in exclude_keys:
                     if use_thread:
-                        payload["state_dicts"][key] = _copy_to_cpu(value.state_dict())
+                        payload["state_dicts"][key] = _copy_to_cpu(value_for_sd.state_dict())
                     else:
-                        payload["state_dicts"][key] = value.state_dict()
+                        payload["state_dicts"][key] = value_for_sd.state_dict()
             elif key in include_keys:
                 payload["pickles"][key] = dill.dumps(value)
         if use_thread:
@@ -169,6 +182,43 @@ class BaseWorkspace:
     @classmethod
     def create_from_snapshot(cls, path):
         return torch.load(open(path, "rb"), pickle_module=dill)
+
+    def join_saving_thread(self):
+        """Wait for any in-flight background checkpoint save to complete."""
+        if self._saving_thread is not None:
+            self._saving_thread.join()
+
+    def _get_protected_paths(self, topk_manager_idx, topk_managers):
+        """
+        Returns the set of checkpoint paths that the given manager must not delete.
+
+        When multiple TopKCheckpointManagers track different metrics (e.g. val_loss and
+        success_rate), the same checkpoint file may appear in more than one manager's
+        top-K list. Before a manager evicts a checkpoint to make room for a new one,
+        we must ensure it does not delete a file that another manager still needs.
+        """
+        if len(topk_managers) == 1:
+            return set()
+
+        topk_manager = topk_managers[topk_manager_idx]
+
+        # Start with the union of every checkpoint tracked by any manager
+        protected_paths = set()
+        for manager in topk_managers:
+            protected_paths.update(manager.get_path_value_map().keys())
+
+        # Un-protect any checkpoint that this manager owns but no other manager tracks —
+        # those are safe for this manager to delete on its own.
+        for path in topk_manager.get_path_value_map().keys():
+            tracked_by_other = any(
+                path in manager.get_path_value_map()
+                for i, manager in enumerate(topk_managers)
+                if i != topk_manager_idx
+            )
+            if not tracked_by_other:
+                protected_paths.remove(path)
+
+        return protected_paths
 
 
 def _copy_to_cpu(x):

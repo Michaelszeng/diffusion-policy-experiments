@@ -47,7 +47,7 @@ pip install zarr
 
 ```bash
 python3 -m venv env --without-pip
-./env/bin/activate
+source env/bin/activate
 curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
 python3 /tmp/get-pip.py --no-warn-script-location
 pip install -r requirements.txt
@@ -89,9 +89,6 @@ LLsub ./submit_training.sh -s 20 -g volta:1
 ### Resuming Training:
 
 In your config file, set `training.resume: true`. Optionally (recommended), also set `logging.resume: true` and set `logging.id` to the wandb ID that you want to continue from (i.e. "thfb8nrq" for training run `data/outputs/maniskill/2_obs/wandb/offline-run-20251118_134543-thfb8nrq`).
-
-
-Remember to also obtain and `desktop_to_supercloud.sh` (if running on Supercloud) the dataset files.
 
 
 ## Important Configurations

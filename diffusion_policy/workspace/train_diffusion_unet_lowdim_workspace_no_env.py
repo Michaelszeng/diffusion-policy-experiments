@@ -17,23 +17,23 @@ import copy
 import os
 import pathlib
 import random
-import shutil
 
 import hydra
 import numpy as np
 import torch
 import tqdm
-from diffusers.training_utils import EMAModel
 from omegaconf import ListConfig, OmegaConf
-from torch.cuda.amp import GradScaler, autocast
+from accelerate import Accelerator
+from accelerate.utils import DistributedDataParallelKwargs
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
-import wandb
 from diffusion_policy.common.checkpoint_util import TopKCheckpointManager
 from diffusion_policy.common.json_logger import JsonLogger
-from diffusion_policy.common.pytorch_util import dict_apply, optimizer_to
+from diffusion_policy.common.pytorch_util import dict_apply
 from diffusion_policy.dataset.base_dataset import BaseLowdimDataset
 from diffusion_policy.model.common.lr_scheduler import get_scheduler
+from diffusion_policy.model.diffusion.ema_model import EMAModel
 from diffusion_policy.policy.diffusion_unet_lowdim_policy import DiffusionUnetLowdimPolicy
 from diffusion_policy.workspace.base_workspace import BaseWorkspace
 
@@ -53,72 +53,120 @@ class TrainDiffusionUnetLowdimWorkspaceNoEnv(BaseWorkspace):
         np.random.seed(seed)
         random.seed(seed)
 
-        # configure model
-        self.model: DiffusionUnetLowdimPolicy
-        self.model = hydra.utils.instantiate(cfg.policy)
+        # configure model (device placement and DDP wrapping handled in run() via accelerator.prepare)
+        self.model: DiffusionUnetLowdimPolicy = hydra.utils.instantiate(cfg.policy)
 
         self.ema_model: DiffusionUnetLowdimPolicy = None
         if cfg.training.use_ema:
             self.ema_model = copy.deepcopy(self.model)
 
-        # configure training state
+        # configure optimizer
         self.optimizer = hydra.utils.instantiate(cfg.optimizer, params=self.model.parameters())
 
+        # configure training state
         self.global_step = 0
         self.epoch = 0
-
-        # configure mixed precision training
-        amp_config = getattr(cfg.training, "use_amp", False)
-        self.use_amp = amp_config is not False
-        self.amp_dtype = torch.bfloat16 if amp_config == "bf16" else torch.float16
-        self.scaler = GradScaler() if (self.use_amp and self.amp_dtype == torch.float16) else None
-        print(f"Mixed precision training: {'enabled' if self.use_amp else 'disabled'} (dtype: {amp_config if self.use_amp else 'N/A'})")
 
     def run(self):
         cfg = copy.deepcopy(self.cfg)
 
+        # Determine mixed precision from config ("no" / "fp16" / "bf16")
+        mixed_precision = getattr(cfg.training, "mixed_precision", None) or "no"
+
+        # Accelerator replaces: DataParallel, GradScaler, autocast, and wandb.init.
+        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
+        accelerator = Accelerator(
+            log_with="wandb",
+            mixed_precision=mixed_precision,
+            kwargs_handlers=[ddp_kwargs],
+        )
+
+        # Init W&B logging via accelerator (only logs on main process)
+        wandb_cfg = OmegaConf.to_container(cfg.logging, resolve=True)
+        project_name = wandb_cfg.pop("project")
+        wandb_cfg["dir"] = str(self.output_dir)
+        wandb_cfg["settings"] = {"_disable_stats": True}
+        accelerator.init_trackers(
+            project_name=project_name,
+            config={**OmegaConf.to_container(cfg, resolve=True), "output_dir": self.output_dir},
+            init_kwargs={"wandb": wandb_cfg},
+        )
+
         # resume training
         if cfg.training.resume:
-            lastest_ckpt_path = self.get_checkpoint_path()
-            if lastest_ckpt_path.is_file():
-                print(f"Resuming from checkpoint {lastest_ckpt_path}")
-                self.load_checkpoint(path=lastest_ckpt_path)
+            if getattr(cfg.training, "checkpoint_path", None) is not None:
+                ckpt_path = pathlib.Path(cfg.training.checkpoint_path)
+                if ckpt_path.is_file():
+                    accelerator.print(f"Resuming from user-specified checkpoint {ckpt_path}")
+                    self.load_checkpoint(path=ckpt_path)
+                    self.epoch += 1
+                else:
+                    accelerator.print(f"ATTENTION: Resume requested but checkpoint {ckpt_path} not found. Starting from scratch.")
+            else:
+                latest_ckpt_path = self.get_checkpoint_path()
+                if latest_ckpt_path.is_file():
+                    accelerator.print(f"Resuming from checkpoint {latest_ckpt_path}")
+                    self.load_checkpoint(path=latest_ckpt_path)
+                    self.epoch += 1
+                else:
+                    accelerator.print(
+                        f"ATTENTION: Resume requested but no checkpoint found at {latest_ckpt_path}. Starting from scratch."
+                    )
 
         # configure dataset
-        dataset: BaseLowdimDataset
-        dataset = hydra.utils.instantiate(cfg.task.dataset)
+        dataset: BaseLowdimDataset = hydra.utils.instantiate(cfg.task.dataset)
         assert isinstance(dataset, BaseLowdimDataset)
-        train_dataloader = DataLoader(dataset, **cfg.dataloader)
-        normalizer = dataset.get_normalizer()
-        torch.save(normalizer, os.path.join(self.output_dir, "normalizer.pt"))
+
+        # Create training dataloader.
+        # For multi-GPU: use DistributedSampler so each process sees a disjoint shard.
+        # For single-GPU: use the regular dataloader config directly.
+        dataloader_cfg = OmegaConf.to_container(cfg.dataloader, resolve=True)
+        if accelerator.num_processes > 1:
+            shuffle = dataloader_cfg.pop("shuffle", True)
+            drop_last = dataloader_cfg.pop("drop_last", True)
+            train_sampler = DistributedSampler(
+                dataset,
+                num_replicas=accelerator.num_processes,
+                rank=accelerator.process_index,
+                shuffle=shuffle,
+                seed=cfg.training.seed,
+            )
+            train_dataloader = DataLoader(dataset, sampler=train_sampler, drop_last=drop_last, **dataloader_cfg)
+        else:
+            train_sampler = None
+            train_dataloader = DataLoader(dataset, **cfg.dataloader)
+
+        # Compute normalizer on the main process and save to disk, then all processes load it.
+        normalizer_path = os.path.join(self.output_dir, "normalizer.pt")
+        if accelerator.is_main_process:
+            normalizer = dataset.get_normalizer()
+            torch.save(normalizer, normalizer_path)
+        accelerator.wait_for_everyone()
+        normalizer = torch.load(normalizer_path)
 
         # configure validation dataset
         val_dataset = dataset.get_validation_dataset()
         val_dataloader = DataLoader(val_dataset, **cfg.val_dataloader)
 
-        self._print_dataset_diagnostics(cfg, dataset, train_dataloader, val_dataloader)
+        if accelerator.is_main_process:
+            self._print_dataset_diagnostics(cfg, dataset, train_dataloader, val_dataloader)
 
         self.model.set_normalizer(normalizer)
         if cfg.training.use_ema:
             self.ema_model.set_normalizer(normalizer)
 
-        # Calculate total training steps based on num_epochs or total_train_steps
+        # Calculate number of epochs
         if cfg.training.num_epochs is not None:
-            num_training_steps = (
-                len(train_dataloader) * cfg.training.num_epochs
-            ) // cfg.training.gradient_accumulate_every
-        else:
-            num_training_steps = cfg.training.total_train_steps // cfg.training.gradient_accumulate_every
-
-        # Calculate number of epochs if using total_train_steps
-        if cfg.training.num_epochs is None:
-            # Calculate epochs needed to reach total_train_steps
-            steps_per_epoch = len(train_dataloader)
-            num_epochs = (cfg.training.total_train_steps + steps_per_epoch - 1) // steps_per_epoch  # ceil division
-            print(f"Training for {num_epochs} epochs to reach {cfg.training.total_train_steps} total steps")
-        else:
             num_epochs = cfg.training.num_epochs
-            print(f"Training for {num_epochs} epochs")
+            num_training_steps = (
+                len(train_dataloader) * num_epochs
+            ) // cfg.training.gradient_accumulate_every
+            accelerator.print(f"Training for {num_epochs} epochs")
+        else:
+            steps_per_epoch = len(train_dataloader)
+            num_epochs = (cfg.training.total_train_steps + steps_per_epoch - 1) // steps_per_epoch
+            num_training_steps = cfg.training.total_train_steps // cfg.training.gradient_accumulate_every
+            accelerator.print(f"Training for {num_epochs} epochs to reach {cfg.training.total_train_steps} total steps")
 
         lr_scheduler = get_scheduler(
             cfg.training.lr_scheduler,
@@ -135,15 +183,23 @@ class TrainDiffusionUnetLowdimWorkspaceNoEnv(BaseWorkspace):
         if cfg.training.use_ema:
             ema = hydra.utils.instantiate(cfg.ema, model=self.ema_model)
 
-        # configure logging
-        wandb_run = wandb.init(
-            dir=str(self.output_dir), config=OmegaConf.to_container(cfg, resolve=True), **cfg.logging
-        )
-        wandb.config.update(
-            {
-                "output_dir": self.output_dir,
-            }
-        )
+        # Prepare model and optimizer with accelerate.
+        self.model, self.optimizer = accelerator.prepare(self.model, self.optimizer)
+        # Keep a reference to the unwrapped model for attribute access
+        unwrapped_model = accelerator.unwrap_model(self.model)
+        device = accelerator.device
+
+        # EMA model is not prepared by accelerate; move it to device manually
+        if self.ema_model is not None:
+            self.ema_model.to(device)
+
+        # Propagate mixed_precision to the unwrapped model and EMA model so that
+        # predict_action's internal torch.autocast works correctly.
+        unwrapped_model.mixed_precision = mixed_precision
+        if self.ema_model is not None:
+            self.ema_model.mixed_precision = mixed_precision
+
+        accelerator.print(f"Running on {accelerator.num_processes} GPU(s), mixed_precision={mixed_precision}.")
 
         # configure checkpoint managers
         save_last_ckpt = cfg.checkpoint.save_last_ckpt
@@ -168,7 +224,6 @@ class TrainDiffusionUnetLowdimWorkspaceNoEnv(BaseWorkspace):
                         )
                     )
         # Update loaded topk managers with new config (e.g. if k changed, or if output_dir changed)
-        # This also loads the topk managers' state, i.e. the paths of the current top k
         else:
             if not isinstance(cfg.checkpoint.topk, ListConfig):
                 if len(self.topk_managers) > 0:
@@ -180,14 +235,12 @@ class TrainDiffusionUnetLowdimWorkspaceNoEnv(BaseWorkspace):
             else:
                 for i, topk_cfg in enumerate(cfg.checkpoint.topk):
                     if i < len(self.topk_managers):
-                        # Update existing manager with potentially new config values
                         self.topk_managers[i].k = topk_cfg.k
                         self.topk_managers[i].format_str = topk_cfg.format_str
                         self.topk_managers[i].mode = topk_cfg.mode
                         self.topk_managers[i].monitor_key = topk_cfg.monitor_key
                         self.topk_managers[i].save_dir = os.path.join(self.output_dir, "checkpoints")
                     else:
-                        # Append new manager if config has more managers than the loaded checkpoint
                         self.topk_managers.append(
                             TopKCheckpointManager(
                                 save_dir=os.path.join(self.output_dir, "checkpoints"),
@@ -195,81 +248,55 @@ class TrainDiffusionUnetLowdimWorkspaceNoEnv(BaseWorkspace):
                             )
                         )
 
-        # device transfer
-        if cfg.training.device == "mps":
-            # MPS does not support float64
-            self.model = self.model.to(torch.float32)
-            if self.ema_model is not None:
-                self.ema_model = self.ema_model.to(torch.float32)
-            for state in self.optimizer.state.values():
-                for k, v in state.items():
-                    if isinstance(v, torch.Tensor):
-                        state[k] = v.to(torch.float32)
-        device = torch.device(cfg.training.device)
-        self.model.to(device)
-        if self.ema_model is not None:
-            self.ema_model.to(device)
-        optimizer_to(self.optimizer, device)
-
         # save batch for sampling
         val_sampling_batch = None
 
         if cfg.training.debug:
-            cfg.training.num_epochs = 2
+            num_epochs = 2
             cfg.training.max_train_steps = 3
             cfg.training.max_val_steps = 3
-            cfg.training.rollout_every = 1
             cfg.training.checkpoint_every = 1
             cfg.training.val_every = 1
             cfg.training.sample_every = 1
 
         # training loop
         log_path = os.path.join(self.output_dir, "logs.json.txt")
+        resume_epoch = self.epoch
         with JsonLogger(log_path) as json_logger:
-            for local_epoch_idx in range(num_epochs):
+            for local_epoch_idx in range(resume_epoch, num_epochs):
+                # Set epoch on DistributedSampler so each epoch gets a different shuffle
+                if train_sampler is not None:
+                    train_sampler.set_epoch(local_epoch_idx)
+
                 step_log = dict()
-                # ========= train for this epoch ==========
                 train_losses = list()
                 with tqdm.tqdm(
                     train_dataloader,
                     desc=f"Training epoch {self.epoch}",
                     leave=False,
+                    disable=not accelerator.is_main_process,
                     mininterval=cfg.training.tqdm_interval_sec,
                 ) as tepoch:
                     for batch_idx, batch in enumerate(tepoch):
                         # device transfer
-                        if cfg.training.device == "mps":
-                            batch = dict_apply(batch, lambda x: x.to(torch.float32))
                         batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
 
-                        # compute loss
-                        if self.use_amp:
-                            with autocast(dtype=self.amp_dtype):
-                                raw_loss = self.model.compute_loss(batch)
-                                loss = raw_loss / cfg.training.gradient_accumulate_every
-                        else:
-                            raw_loss = self.model.compute_loss(batch)
-                            loss = raw_loss / cfg.training.gradient_accumulate_every
+                        # Forward pass — DDP wrapper applies autocast from mixed_precision
+                        raw_loss = self.model(batch)
+                        loss = raw_loss / cfg.training.gradient_accumulate_every
 
-                        if self.scaler is not None:
-                            self.scaler.scale(loss).backward()
-                        else:
-                            loss.backward()
+                        # Backward pass — accelerator handles gradient scaling (fp16 GradScaler)
+                        accelerator.backward(loss)
 
                         # step optimizer
                         if self.global_step % cfg.training.gradient_accumulate_every == 0:
-                            if self.scaler is not None:
-                                self.scaler.step(self.optimizer)
-                                self.scaler.update()
-                                self.optimizer.zero_grad()
-                            else:
-                                self.optimizer.step()
-                                self.optimizer.zero_grad()
+                            self.optimizer.step()
+                            self.optimizer.zero_grad()
                             lr_scheduler.step()
 
                         # update ema
                         if cfg.training.use_ema:
-                            ema.step(self.model)
+                            ema.step(unwrapped_model)
 
                         # logging
                         raw_loss_cpu = raw_loss.item()
@@ -285,8 +312,9 @@ class TrainDiffusionUnetLowdimWorkspaceNoEnv(BaseWorkspace):
                         is_last_batch = batch_idx == (len(train_dataloader) - 1)
                         if not is_last_batch:
                             # log of last step is combined with validation and rollout
-                            wandb_run.log(step_log, step=self.global_step)
-                            json_logger.log(step_log)
+                            accelerator.log(step_log, step=self.global_step)
+                            if accelerator.is_main_process:
+                                json_logger.log(step_log)
                             self.global_step += 1
 
                         if (cfg.training.max_train_steps is not None) and batch_idx >= (
@@ -294,18 +322,14 @@ class TrainDiffusionUnetLowdimWorkspaceNoEnv(BaseWorkspace):
                         ):
                             break
 
-                # at the end of each epoch
-                # replace train_loss with epoch average
-                train_loss = np.mean(train_losses)
-                step_log["train_loss"] = train_loss
+                # at the end of each epoch, replace train_loss with epoch average
+                step_log["train_loss"] = np.mean(train_losses)
 
-                # ========= eval for this epoch ==========
-                policy = self.model
-                if cfg.training.use_ema:
-                    policy = self.ema_model
-                policy.eval()
+                # ── Validation ───────────────────────────────────────────────────
+                # Use EMA model for evaluation if available, otherwise use unwrapped training model
+                eval_policy = self.ema_model if cfg.training.use_ema else unwrapped_model
+                eval_policy.eval()
 
-                # run validation
                 if (self.epoch % cfg.training.val_every) == 0:
                     with torch.no_grad():
                         val_losses = list()
@@ -313,29 +337,32 @@ class TrainDiffusionUnetLowdimWorkspaceNoEnv(BaseWorkspace):
                             val_dataloader,
                             desc=f"Validation epoch {self.epoch}",
                             leave=False,
+                            disable=not accelerator.is_main_process,
                             mininterval=cfg.training.tqdm_interval_sec,
                         ) as tepoch:
                             for batch_idx, batch in enumerate(tepoch):
-                                if cfg.training.device == "mps":
-                                    batch = dict_apply(batch, lambda x: x.to(torch.float32))
                                 batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
                                 if val_sampling_batch is None:
                                     val_sampling_batch = batch
-                                loss = policy.compute_loss(batch)
-                                val_losses.append(loss)
+
+                                with torch.autocast(
+                                    device_type=device.type,
+                                    dtype=torch.bfloat16 if mixed_precision == "bf16" else torch.float16,
+                                    enabled=mixed_precision != "no",
+                                ):
+                                    loss = eval_policy.compute_loss(batch)
+                                val_losses.append(loss.item())
+
                                 if (cfg.training.max_val_steps is not None) and batch_idx >= (
                                     cfg.training.max_val_steps - 1
                                 ):
                                     break
                         if len(val_losses) > 0:
-                            val_loss = torch.mean(torch.tensor(val_losses)).item()
-                            # log epoch average validation loss
-                            step_log["val_loss"] = val_loss
+                            step_log["val_loss"] = np.mean(val_losses)
 
-                # run diffusion sampling on a validation batch
+                # ── DDPM/DDIM clean action MSE validation ────────────────────────
                 if (self.epoch % cfg.training.sample_every) == 0 and cfg.training.log_val_mse:
                     with torch.no_grad():
-                        # Get the validation batch
                         val_batch = dict_apply(
                             val_sampling_batch,
                             lambda x: x.to(device, non_blocking=True),
@@ -345,41 +372,28 @@ class TrainDiffusionUnetLowdimWorkspaceNoEnv(BaseWorkspace):
                             val_obs_dict["target"] = val_batch["target"]
                         val_gt_action = val_batch["action"]
 
-                        # Evaluate MSE when diffusing with DDPM
                         if cfg.training.eval_mse_DDPM:
-                            result = policy.predict_action(val_obs_dict, use_DDIM=False)
-                            pred_action = result["action_pred"]
-                            mse = torch.nn.functional.mse_loss(pred_action, val_gt_action)
+                            result = eval_policy.predict_action(val_obs_dict, use_DDIM=False)
+                            mse = torch.nn.functional.mse_loss(result["action_pred"], val_gt_action)
                             step_log["val_ddpm_mse"] = mse.item()
 
-                        # Evaluate MSE when diffusing with DDIM
                         if cfg.training.eval_mse_DDIM:
-                            result = policy.predict_action(val_obs_dict, use_DDIM=True)
-                            pred_action = result["action_pred"]
-                            mse = torch.nn.functional.mse_loss(pred_action, val_gt_action)
+                            result = eval_policy.predict_action(val_obs_dict, use_DDIM=True)
+                            mse = torch.nn.functional.mse_loss(result["action_pred"], val_gt_action)
                             step_log["val_ddim_mse"] = mse.item()
 
-                        # Free RAM
-                        del val_batch
-                        del val_obs_dict
-                        del val_gt_action
-                        del result
-                        del pred_action
-                        del mse
+                # ── Checkpointing (main process only) ────────────────────────────
+                if (self.epoch % cfg.training.checkpoint_every) == 0 and accelerator.is_main_process:
+                    # Pass the unwrapped model so save_checkpoint serializes clean weights
+                    ckpt_kwargs = {"state_dict_overrides": {"model": unwrapped_model}}
 
-                # checkpoint
-                if (self.epoch % cfg.training.checkpoint_every) == 0:
-                    # checkpointing
                     if save_last_ckpt:
-                        self.save_checkpoint()
+                        self.save_checkpoint(**ckpt_kwargs)
                     if save_last_snapshot:
                         self.save_snapshot()
 
                     # sanitize metric names
-                    metric_dict = dict()
-                    for key, value in step_log.items():
-                        new_key = key.replace("/", "_")
-                        metric_dict[new_key] = value
+                    metric_dict = {k.replace("/", "_"): v for k, v in step_log.items()}
 
                     # Metric-based Top-K checkpointing
                     topk_ckpt_paths = []
@@ -388,50 +402,28 @@ class TrainDiffusionUnetLowdimWorkspaceNoEnv(BaseWorkspace):
                         ckpt_path = topk_manager.get_ckpt_path(metric_dict, protected_ckpts)
                         topk_ckpt_paths.append(ckpt_path)
 
-                    for i, topk_ckpt_path in enumerate(topk_ckpt_paths):
+                    for topk_ckpt_path in topk_ckpt_paths:
                         if topk_ckpt_path is not None:
-                            self.save_checkpoint(path=topk_ckpt_path)
+                            self.save_checkpoint(path=topk_ckpt_path, **ckpt_kwargs)
                             break
-                # last epoch => save last checkpoint
-                if self.epoch == num_epochs - 1 and save_last_ckpt:
-                    self.save_checkpoint()
-                # ========= eval end for this epoch ==========
-                policy.train()
 
-                # end of epoch
-                # log of last step is combined with validation and rollout
-                wandb_run.log(step_log, step=self.global_step)
-                json_logger.log(step_log)
+                # Save checkpoint at end of last epoch (main process only)
+                if self.epoch == num_epochs - 1 and save_last_ckpt and accelerator.is_main_process:
+                    self.save_checkpoint(state_dict_overrides={"model": unwrapped_model})
+
+                # Sync all processes after checkpointing before moving to next epoch
+                accelerator.wait_for_everyone()
+
+                eval_policy.train()
+
+                accelerator.log(step_log, step=self.global_step)
+                if accelerator.is_main_process:
+                    json_logger.log(step_log)
                 self.global_step += 1
                 self.epoch += 1
 
-    def _get_protected_paths(self, topk_manager_idx, topk_managers):
-        """
-        Returns the paths that should not be deleted by topk_manager
-        """
-        if len(topk_managers) == 1:
-            return set()
-
-        topk_manager = topk_managers[topk_manager_idx]
-
-        protected_paths = set()
-        for manager in topk_managers:
-            protected_paths.update(manager.get_path_value_map().keys())
-
-        # Remove the paths that can be deleted
-        # If a ckpt is ONLY being tracked by topk_manager, it can be deleted
-        for path in topk_manager.get_path_value_map().keys():
-            protected = False
-            for i, manager in enumerate(topk_managers):
-                if i == topk_manager_idx:
-                    continue
-                if path in manager.get_path_value_map().keys():
-                    protected = True
-                    break
-            if not protected:
-                protected_paths.remove(path)
-
-        return protected_paths
+        self.join_saving_thread()  # Wait for any in-flight checkpoint save to complete
+        accelerator.end_training()
 
     def _print_dataset_diagnostics(self, cfg, dataset, train_dataloader, val_dataloader):
         """CURRENTLY ONLY SUPPORTS SINGLE DATASET."""

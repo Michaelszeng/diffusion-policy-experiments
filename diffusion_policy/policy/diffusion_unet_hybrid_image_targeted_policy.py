@@ -1,68 +1,67 @@
 from typing import Dict
 
-import robomimic.models.obs_core as rmobsc
-import robomimic.utils.obs_utils as ObsUtils
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from diffusers.schedulers.scheduling_ddim import DDIMScheduler
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 from einops import reduce
-from robomimic.algo import algo_factory
-from robomimic.algo.algo import PolicyAlgo
 
-import diffusion_policy.model.vision.crop_randomizer as dmvc
-from diffusion_policy.common.pytorch_util import dict_apply, replace_submodules
-from diffusion_policy.common.robomimic_config_util import get_robomimic_config
+from diffusion_policy.common.pytorch_util import dict_apply
+from diffusion_policy.common.robomimic_config_util import get_robomimic_obs_encoder
 from diffusion_policy.model.common.normalizer import LinearNormalizer
 from diffusion_policy.model.diffusion.conditional_unet1d import ConditionalUnet1D
-from diffusion_policy.model.diffusion.mask_generator import LowdimMaskGenerator
-from diffusion_policy.model.mlp.mlp import MLP
 from diffusion_policy.policy.base_image_policy import BaseImagePolicy
 
 
 class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
     """
-    Diffusion policy model architecture that uses a UNet encoder, and conditions on
-    images and target states/goals
+    Diffusion policy model architecture that uses a UNet encoder, hybrid (Robomimic-pretrained Resnet) encoder,
+    and conditions on images and target states/goals
     """
 
     def __init__(
         self,
         shape_meta: dict,
         DDPM_noise_scheduler: DDPMScheduler,
-        horizon,
-        n_action_steps,
-        n_obs_steps,
-        one_hot_encoding_dim=0,
-        use_target_cond=False,
-        target_dim=None,
-        crop_shape=(76, 76),
-        diffusion_step_embed_dim=256,
-        down_dims=(256, 512, 1024),
-        kernel_size=5,
-        n_groups=8,
-        cond_predict_scale=True,
-        obs_embedding_dim=None,
-        obs_encoder_group_norm=False,
-        eval_fixed_crop=False,
-        num_DDPM_inference_steps=100,
-        num_DDIM_inference_steps=10,
-        pretrained_encoder=False,
-        freeze_pretrained_encoder=False,
-        self_trained_obs_encoder=None,
-        freeze_self_trained_obs_encoder=False,
-        inference_loading=False,
-        past_action_visible=False,
+        horizon: int,
+        n_action_steps: int,
+        n_obs_steps: int,
+        one_hot_encoding_dim: int = 0,  # Dimension of 1-hot encoding (used for i.e. task specification)
+        use_target_cond: bool = False,
+        target_dim: int = None,
+        crop_shape: tuple = (76, 76),  # NOTE: crop size is handled here, in the policy class, since there is no explicit observation encoder class.
+        diffusion_step_embed_dim: int = 256,  # Size of the diffusion timestep embedding
+        down_dims: tuple = (256, 512, 1024),
+        kernel_size: int = 5,  # Resnet param
+        n_groups: int = 8,  # Resnet param
+        num_DDPM_inference_steps: int = 100,
+        num_DDIM_inference_steps: int = 10,
+        pretrained_encoder: bool = False,  # Use Robomimic-pretrained encoder
+        self_trained_obs_encoder: str = None,  # Path to a checkpoint file containing the weights for the self-trained obs encoder
+        freeze_encoder: bool = False,  # Freeze the encoder parameters
+        inference_loading: bool = False,  # Flag to set during inference to skip loading the self-trained obs encoder weights (use the actual checkpoint weights instead)
+        past_action_visible: bool = False,
+        # DEPRECATED PARAMETERS FOR BACKWARD COMPATIBILITY
+        cond_predict_scale = None,
+        obs_encoder_group_norm = None,
+        eval_fixed_crop = None,
+        freeze_pretrained_encoder = None,
+        freeze_self_trained_obs_encoder = None,
         # parameters passed to step
         **kwargs,
     ):
         """
-        Args:
-            one_hot_encoding_dim: number of datasets (>=1),
-
+        Additional Features implemented by this policy class:
+         - Targeted conditioning on a target state/goal
+         - One-hot encoding of task specifications
+         - Self-trained observation encoder -- load observation encoder weights from a specified checkpoint
         """
         super().__init__()
+
+        # BACKWARD COMPATIBILITY
+        if freeze_self_trained_obs_encoder is not None:
+            freeze_encoder = freeze_self_trained_obs_encoder
 
         if use_target_cond:
             assert target_dim is not None
@@ -90,85 +89,20 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
             else:
                 raise RuntimeError(f"Unsupported obs type: {type}")
 
-        # get raw robomimic config
-        config = get_robomimic_config(
-            algo_name="bc_rnn",
-            hdf5_type="image",
-            task_name="square",
-            dataset_type="ph",
-            pretrained_encoder=pretrained_encoder,
-            freeze_pretrained_encoder=freeze_pretrained_encoder,
-        )
-
-        with config.unlocked():
-            # set config with shape_meta
-            config.observation.modalities.obs = obs_config
-
-            if crop_shape is None:
-                for key, modality in config.observation.encoder.items():
-                    if modality.obs_randomizer_class == "CropRandomizer":
-                        modality["obs_randomizer_class"] = None
-            else:
-                # set random crop parameter
-                ch, cw = crop_shape
-                for key, modality in config.observation.encoder.items():
-                    if modality.obs_randomizer_class == "CropRandomizer":
-                        modality.obs_randomizer_kwargs.crop_height = ch
-                        modality.obs_randomizer_kwargs.crop_width = cw
-
-        # init global state
-        ObsUtils.initialize_obs_utils_with_config(config)
-
-        # We use the image encoder from robomimic
-        # This isn't clean, but we create a robomimic policy object and then
-        # just extract the image encoder.
-        policy: PolicyAlgo = algo_factory(
-            algo_name=config.algo_name,
-            config=config,
+        # Get observation encoder from Robomimic
+        obs_encoder = get_robomimic_obs_encoder(
+            obs_config=obs_config,
             obs_key_shapes=obs_key_shapes,
-            ac_dim=action_dim,
-            device="cuda" if torch.cuda.is_available() else "cpu",
+            action_dim=action_dim,
+            pretrained_encoder=pretrained_encoder,
+            freeze_encoder=freeze_encoder,
+            crop_shape=crop_shape,
         )
-        obs_encoder = policy.nets["policy"].nets["encoder"].nets["obs"]
 
-        if obs_encoder_group_norm:
-            # This is a hack to get around the fact that the image encoder uses
-            # batch norm. We replace it with group norm.
-            replace_submodules(
-                root_module=obs_encoder,
-                predicate=lambda x: isinstance(x, nn.BatchNorm2d),
-                func=lambda x: nn.GroupNorm(num_groups=x.num_features // 16, num_channels=x.num_features),
-            )
-
-        if eval_fixed_crop:
-            # This is a hack to get around the fact that the image encoder uses
-            # crop randomizer. We replace it with our own crop randomizer.
-            replace_submodules(
-                root_module=obs_encoder,
-                predicate=lambda x: isinstance(x, rmobsc.CropRandomizer),
-                func=lambda x: dmvc.CropRandomizer(
-                    input_shape=x.input_shape,
-                    crop_height=x.crop_height,
-                    crop_width=x.crop_width,
-                    num_crops=x.num_crops,
-                    pos_enc=x.pos_enc,
-                ),
-            )
-
-        if obs_embedding_dim is not None:
-            obs_feature_dim = obs_embedding_dim
-            self.obs_embedding_projector = MLP(obs_encoder.output_shape()[0], [], obs_feature_dim)
-            self.obs_embedding_projector.to("cuda" if torch.cuda.is_available() else "cpu")
-            project_obs_embedding = True
-        else:
-            obs_feature_dim = obs_encoder.output_shape()[0]
-            project_obs_embedding = False
-
-        # create diffusion model
-        input_dim = action_dim
+        obs_feature_dim = obs_encoder.output_shape()[0]
         global_cond_dim = obs_feature_dim * n_obs_steps + one_hot_encoding_dim
+        input_dim = action_dim
         print(f"Input dim: {input_dim}, Global cond dim: {global_cond_dim}")
-
         model = ConditionalUnet1D(
             input_dim=input_dim,
             local_cond_dim=None,
@@ -178,39 +112,12 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
             down_dims=down_dims,
             kernel_size=kernel_size,
             n_groups=n_groups,
-            cond_predict_scale=cond_predict_scale,
         )
 
+        # Only load obs encoder weights from self-trained checkpoint during training. During inference, we want to use
+        # the weights from the final checkpoint (rather than override w/ the self-trained weights).
         if not inference_loading:
-            if self_trained_obs_encoder is not None:
-                print(f"Loading obs encoder from {self_trained_obs_encoder}")
-                checkpoint = torch.load(self_trained_obs_encoder, map_location="cpu")  # Load the full checkpoint
-
-                # Extract the model state dict from the checkpoint
-                full_model_state_dict = checkpoint["state_dicts"]["model"]
-
-                # Extract only obs_encoder weights
-                # Keys are "module.obs_encoder.*"
-                obs_encoder_state_dict = {}
-                prefix = "module.obs_encoder."
-                for key, value in full_model_state_dict.items():
-                    if key.startswith(prefix):
-                        # Remove the "module.obs_encoder." prefix
-                        new_key = key[len(prefix) :]
-                        obs_encoder_state_dict[new_key] = value
-
-                if len(obs_encoder_state_dict) == 0:
-                    raise ValueError(
-                        f"No obs_encoder weights found in checkpoint. Keys present: {list(full_model_state_dict.keys())}"
-                    )
-
-                print(f"Loaded {len(obs_encoder_state_dict)} obs_encoder parameters")
-                obs_encoder.load_state_dict(obs_encoder_state_dict, strict=True)
-
-                if freeze_self_trained_obs_encoder:
-                    print("Freezing obs encoder parameters.")
-                    for param in obs_encoder.parameters():
-                        param.requires_grad = False
+            self._maybe_load_and_freeze_obs_encoder(obs_encoder, self_trained_obs_encoder, freeze_encoder)
 
         # Create a DDIM sampler that mirrors the DDPM β-schedule
         DDIM_noise_scheduler = DDIMScheduler(
@@ -223,13 +130,7 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         )
         DDIM_noise_scheduler.set_timesteps(num_DDIM_inference_steps)
 
-        self.mask_generator = LowdimMaskGenerator(
-            action_dim=action_dim,
-            obs_dim=0,  # Using Global Observation Conditioning so obs_dim per timestep is 0
-            max_n_obs_steps=n_obs_steps,
-            fix_obs_steps=True,
-            action_visible=past_action_visible,
-        )
+        self.past_action_visible = past_action_visible
         self.obs_encoder = obs_encoder
         self.model = model
         self.DDPM_noise_scheduler = DDPM_noise_scheduler
@@ -239,7 +140,6 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         self.normalizer = LinearNormalizer()  # Empty normalizer; parameters will be set later
         self.horizon = horizon
         self.obs_feature_dim = obs_feature_dim
-        self.project_obs_embedding = project_obs_embedding
         self.action_dim = action_dim
         self.n_action_steps = n_action_steps
         self.n_obs_steps = n_obs_steps
@@ -251,17 +151,69 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         self.kwargs = {k: v for k, v in kwargs.items() if k in scheduler_params}
 
         print("Diffusion params: %e" % sum(p.numel() for p in self.model.parameters()))
-        print("Vision params: %e" % sum(p.numel() for p in self.obs_encoder.parameters()))
-        if project_obs_embedding:
-            print("Vision projector params: %e" % sum(p.numel() for p in self.obs_embedding_projector.parameters()))
+        print("Observation Encoder params: %e" % sum(p.numel() for p in self.obs_encoder.parameters()))
+
+    def _maybe_load_and_freeze_obs_encoder(self, obs_encoder, checkpoint_path, freeze):
+        """
+        Optionally initializes the obs encoder from a prior training run and/or freezes it.
+
+        The checkpoint is expected to be a full model checkpoint saved by the training workspace,
+        where obs encoder weights are stored under the "module.obs_encoder.*" prefix.
+        """
+        if checkpoint_path is None:
+            return
+
+        # Load the full model checkpoint and extract only the obs_encoder sub-dict
+        print(f"Loading obs encoder from {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        full_model_state_dict = checkpoint["state_dicts"]["model"]
+
+        prefix = "module.obs_encoder."
+        obs_encoder_state_dict = {
+            key[len(prefix):]: value
+            for key, value in full_model_state_dict.items()
+            if key.startswith(prefix)
+        }
+
+        assert len(obs_encoder_state_dict) != 0, ("No obs_encoder weights found in checkpoint." 
+            f"Keys present: {list(full_model_state_dict.keys())}")
+
+        obs_encoder.load_state_dict(obs_encoder_state_dict, strict=True)
+        print(f"Loaded {len(obs_encoder_state_dict)} obs_encoder parameters")
+
+        # Optionally freeze the encoder so only the diffusion UNet trains
+        if freeze:
+            print("Freezing obs encoder parameters.")
+            for param in obs_encoder.parameters():
+                param.requires_grad = False
+
+    def get_inpaint_mask(self, shape):
+        """
+        Returns a boolean inpainting mask of shape (B, T, action_dim).
+
+        True = "known/given" (will be inpainted and excluded from loss).
+        False = "to predict" (model must denoise these).
+
+        When past_action_visible=False (the default), all actions are predicted from
+        scratch and the mask is all-False. When past_action_visible=True, the first
+        (n_obs_steps - 1) action timesteps are treated as known, since they overlap with
+        the observation horizon.
+        """
+        B, T, D = shape
+        device = self.device
+        if not self.past_action_visible:
+            return torch.zeros(size=shape, dtype=torch.bool, device=device)
+        action_steps = max(self.n_obs_steps - 1, 0)
+        steps = torch.arange(0, T, device=device).reshape(1, T).expand(B, T)
+        return (steps < action_steps).reshape(B, T, 1).expand(B, T, D)
 
     ####################################################################################################################
     ### Inference
     ####################################################################################################################
     def conditional_sample(
         self,
-        condition_data,
-        condition_mask,
+        inpaint_data,
+        inpaint_mask,
         global_cond=None,
         target_cond=None,
         generator=None,
@@ -270,13 +222,11 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         **kwargs,
     ):
         """
-        DDPM sampling.
+        Run reverse diffusion sampling.
 
         Args:
-            condition_data (torch.Tensor): Known values to condition on (e.g., observed actions)
-                                        Shape: [B, T, Da] where some timesteps may be known
-            condition_mask (torch.Tensor): Boolean mask indicating which values in condition_data
-                                        are known/should be enforced. Shape: [B, T, Da]
+            inpaint_data (torch.Tensor): Known values for naive inpainting. Shape: [B, T, Da]
+            inpaint_mask (torch.Tensor): Boolean mask indicating which values to inpaint. Shape: [B, T, Da]
             global_cond (torch.Tensor): Observation features from vision encoder. Shape: [B, Do]
             target_cond (torch.Tensor): Goal/target conditioning. Shape: [B, target_dim]
             generator (torch.Generator): RNG
@@ -284,12 +234,7 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
             **kwargs: Additional arguments passed to scheduler.step()
 
         Returns:
-            torch.Tensor: Generated action trajectory. Shape: [B, T, Da]
-                        Clean action sequence ready for robot execution
-
-        Note:
-            - This implements classifier-free guidance through conditioning
-            - condition_mask typically masks out future actions, leaving model to predict them
+            torch.Tensor: Denoised action trajectory. Shape: [B, T, Da]
         """
         model = self.model
         if use_DDIM:
@@ -300,30 +245,26 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
             scheduler.set_timesteps(self.num_DDPM_inference_steps)
 
         trajectory = torch.randn(
-            size=condition_data.shape,
-            dtype=condition_data.dtype,
-            device=condition_data.device,
+            size=inpaint_data.shape,
+            dtype=inpaint_data.dtype,
+            device=inpaint_data.device,
             generator=generator,
         )  # Start with random noise trajectory
 
         for t in scheduler.timesteps:
-            # 1. apply conditioning
-            trajectory[condition_mask] = condition_data[condition_mask]
-
+            # 1. Inpaint: overwrite known positions with correctly-noised inpaint values so
+            #    the UNet sees a consistent noise level across the whole trajectory.
+            if inpaint_mask.any():
+                t_batch = torch.full((inpaint_data.shape[0],), t, device=inpaint_data.device, dtype=torch.long)
+                noised_inpaint = scheduler.add_noise(inpaint_data, torch.randn_like(inpaint_data), t_batch)
+                trajectory[inpaint_mask] = noised_inpaint[inpaint_mask]
             # 2. predict model output
-            model_output = model(
-                trajectory,
-                t,
-                local_cond=None,
-                global_cond=global_cond,
-                target_cond=target_cond,
-            )
-
+            model_output = model(trajectory, t, global_cond=global_cond, target_cond=target_cond)
             # 3. compute previous image: x_t -> x_t-1
             trajectory = scheduler.step(model_output, t, trajectory, generator=generator, **kwargs).prev_sample
 
-        # finally make sure conditioning is enforced
-        trajectory[condition_mask] = condition_data[condition_mask]
+        # Final override: snap known positions to exact clean values after the last denoising step
+        trajectory[inpaint_mask] = inpaint_data[inpaint_mask]
 
         return trajectory
 
@@ -331,27 +272,10 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         """
         Args:
             obs_dict: Dict containing observation data with the following structure:
-                {
-                    "obs": {
-                        # Low-dimensional observations (robot state)
-                        "agent_pos": torch.Tensor,     # Shape: [B, To, 13] - robot state (6 DOF position + 6 DOF velocity + 1 DOF gripper)
-
-                        # RGB image observations
-                        "overhead_camera": torch.Tensor,  # Shape: [B, To, 3, 128, 128] - overhead RGB images
-                        "wrist_camera": torch.Tensor,     # Shape: [B, To, 3, 128, 128] - wrist RGB images
-                    },
-
-                    # only required if self.use_target_cond=True
-                    "target": torch.Tensor,            # Shape: [B, target_dim] - target
-                }
-
             use_DDIM: Whether to use DDIM sampling instead of DDPM
 
         Returns:
-            Dict[str, torch.Tensor]: Dictionary containing predicted actions:
-                {
-                    "action": torch.Tensor  # Shape: [B, Ta, Da] - predicted action sequence
-                }
+            Dictionary containing predicted actions: {"action": torch.Tensor}  # Shape: [B, Ta, Da]
 
         Where:
             B = batch size
@@ -368,67 +292,68 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
             assert "target" in obs_dict
         assert "past_action" not in obs_dict  # not implemented yet
 
-        # Normalize obs dict
-        nobs = self.normalizer.normalize(obs_dict["obs"])
-        ntarget = None
-        if self.use_target_cond:
-            # Normalize target tensor
-            ntarget = self.normalizer["target"].normalize(obs_dict["target"])
-        value = next(iter(nobs.values()))
-        B, To = value.shape[:2]
-        T = self.horizon
-        Da = self.action_dim
-        Do = self.obs_feature_dim
-        To = self.n_obs_steps
+        mixed_precision = getattr(self, "mixed_precision", None) or "no"
+        with torch.autocast(
+            device_type=self.device.type,
+            dtype=torch.bfloat16 if mixed_precision == "bf16" else torch.float16,
+            enabled=mixed_precision != "no",
+        ):
+            # Normalize obs dict
+            nobs = self.normalizer.normalize(obs_dict["obs"])
+            ntarget = None
+            if self.use_target_cond:
+                # Normalize target tensor
+                ntarget = self.normalizer["target"].normalize(obs_dict["target"])
+            value = next(iter(nobs.values()))
+            B, To = value.shape[:2]  # Batch size
+            T = self.horizon  # T = prediction horizon
+            Da = self.action_dim  # Da = action dim
+            Do = self.obs_feature_dim  # Do = observation feature dim
+            To = self.n_obs_steps  # To = obs horizon
 
-        # build input
-        device = self.device
-        dtype = self.dtype
+            # Encode observations into global conditioning vector
+            this_nobs = dict_apply(nobs, lambda x: x[:, :To, ...].reshape(-1, *x.shape[2:]))
+            nobs_features = self.obs_encoder(this_nobs)
+            # Reshape back to B, Do
+            global_cond = nobs_features.reshape(B, -1)
 
-        # condition through global feature
-        this_nobs = dict_apply(nobs, lambda x: x[:, :To, ...].reshape(-1, *x.shape[2:]))
-        nobs_features = self.obs_encoder(this_nobs)
-        if self.project_obs_embedding:
-            nobs_features = self.obs_embedding_projector(nobs_features)
-        # reshape back to B, Do
-        global_cond = nobs_features.reshape(B, -1)
-        # empty data for action
-        cond_data = torch.zeros(size=(B, T, Da), device=device, dtype=dtype)
-        cond_mask = torch.zeros_like(cond_data, dtype=torch.bool)
+            # No inpainting
+            inpaint_data = torch.zeros(size=(B, T, Da), device=self.device, dtype=self.dtype)
+            inpaint_mask = torch.zeros_like(inpaint_data, dtype=torch.bool)
 
-        # append one hot encoding
-        if self.one_hot_encoding_dim > 0:
-            one_hot_encoding = obs_dict["one_hot_encoding"]
-            global_cond = torch.cat([global_cond, one_hot_encoding], dim=-1)
+            # Append one hot encoding to global conditioning vector
+            if self.one_hot_encoding_dim > 0:
+                one_hot_encoding = obs_dict["one_hot_encoding"]
+                global_cond = torch.cat([global_cond, one_hot_encoding], dim=-1)
 
-        # handle target conditioning
-        target_cond = None
-        if self.use_target_cond:
-            target_cond = ntarget.reshape(B, -1)  # B, D_t
+            # Build target conditioning vector
+            target_cond = None
+            if self.use_target_cond:
+                target_cond = ntarget.reshape(B, -1)  # B, D_t
 
-        # run sampling
-        nsample = self.conditional_sample(
-            cond_data,
-            cond_mask,
-            global_cond=global_cond,
-            target_cond=target_cond,
-            use_DDIM=use_DDIM,
-            **self.kwargs,
-        )
+            # Run reverse diffusion sampling
+            nsample = self.conditional_sample(
+                inpaint_data,
+                inpaint_mask,
+                global_cond=global_cond,
+                target_cond=target_cond,
+                use_DDIM=use_DDIM,
+                **self.kwargs,
+            )
 
-        # unnormalize prediction
-        naction_pred = nsample[..., :Da]
-        action_pred = self.normalizer["action"].unnormalize(naction_pred)
+            # Unnormalize prediction
+            naction_pred = nsample[..., :Da]
+            action_pred = self.normalizer["action"].unnormalize(naction_pred)
 
-        # get action
-        start = To - 1
-        end = start + self.n_action_steps
-        action = action_pred[:, start:end]
+            # Get action
+            start = To - 1
+            end = start + self.n_action_steps
+            action = action_pred[:, start:end]
 
-        # pred_action is the full predicted action sequence; action is a slice beginning after the latest observation
-        # and with length n_action_steps
-        result = {"action": action, "action_pred": action_pred}
-        return result
+            # pred_action is the full predicted action sequence; action is a slice beginning after the latest observation
+            # and with length n_action_steps
+            result = {"action": action, "action_pred": action_pred}
+            return result
 
     ####################################################################################################################
     ### Training
@@ -450,7 +375,7 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         noisy_trajectory = self.DDPM_noise_scheduler.add_noise(trajectory, noise, timesteps)
         return noisy_trajectory, timesteps, noise
 
-    def forward(self, batch, noisy_trajectory, timesteps, condition_mask=None):
+    def forward(self, batch, noisy_trajectory, timesteps, inpaint_mask=None):
         """
         Build input vectors (noisy trajectory, global conditioning vector, target conditioning vector) and run them
         through the model to get a prediction (of either the noise vector or the denoised trajectory depending on the
@@ -466,7 +391,7 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
             ntarget = self.normalizer["target"].normalize(batch["target"])
 
         # Sizing convenience
-        batch_size = nactions.shape[0]
+        B = nactions.shape[0]
         horizon = nactions.shape[1]
 
         # encode observations into global conditioning vector
@@ -474,10 +399,8 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         # reshape B, T, ... to B*T
         this_nobs = dict_apply(nobs, lambda x: x[:, : self.n_obs_steps, ...].reshape(-1, *x.shape[2:]))
         nobs_features = self.obs_encoder(this_nobs)
-        if self.project_obs_embedding:
-            nobs_features = self.obs_embedding_projector(nobs_features)
         # reshape back to B, Do
-        global_cond = nobs_features.reshape(batch_size, -1)  # B, Do
+        global_cond = nobs_features.reshape(B, -1)  # B, Do
 
         # append one hot encoding to global conditioning vector
         if self.one_hot_encoding_dim > 0:
@@ -487,10 +410,10 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         # build target conditioning vector
         target_cond = None
         if self.use_target_cond:
-            target_cond = ntarget.reshape(batch_size, -1)  # B, D_t
+            target_cond = ntarget.reshape(B, -1)  # B, D_t
 
-        if condition_mask is not None:
-            noisy_trajectory[condition_mask] = nactions[condition_mask]
+        if inpaint_mask is not None:
+            noisy_trajectory[inpaint_mask] = nactions[inpaint_mask]
 
         # Predict the noise residual
         return self.model(
