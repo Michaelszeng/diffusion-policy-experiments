@@ -100,7 +100,6 @@ policy:  # Parameters to be passed to policy (i.e. the _target_ policy class bel
   use_modality_emb: true
   use_range_emb: true
   input_pertub: 0.1
-  train_diffusion_n_samples: 1
 task:
   dataset:
     _target_: diffusion_policy.dataset.furniture_bench_dataset.FurnitureBenchDataset
@@ -130,7 +129,7 @@ task:
   shape_meta: ${shape_meta} # not used?
 task_name: furniture_bench
 training:
-  use_amp: False
+  mixed_precision: null  # bf16 or null
   checkpoint_path: null
   checkpoint_every: 5
   debug: false

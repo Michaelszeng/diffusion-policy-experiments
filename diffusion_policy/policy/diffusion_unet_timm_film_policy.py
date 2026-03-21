@@ -33,7 +33,6 @@ class DiffusionUnetTimmFilmPolicy(BaseImagePolicy):
         down_dims=(256, 512, 1024),
         kernel_size=5,
         n_groups=8,
-        cond_predict_scale=True,
         input_pertub=0.1,
         **kwargs,
     ):
@@ -50,7 +49,6 @@ class DiffusionUnetTimmFilmPolicy(BaseImagePolicy):
             down_dims=down_dims,
             kernel_size=kernel_size,
             n_groups=n_groups,
-            cond_predict_scale=cond_predict_scale,
         )
 
         # DDIM scheduler mirrors the DDPM β-schedule for fast inference
@@ -82,8 +80,8 @@ class DiffusionUnetTimmFilmPolicy(BaseImagePolicy):
 
     def conditional_sample(
         self,
-        condition_data,
-        condition_mask,
+        inpaint_data,
+        inpaint_mask,
         global_cond=None,
         use_ddim=False,
         generator=None,
@@ -97,43 +95,54 @@ class DiffusionUnetTimmFilmPolicy(BaseImagePolicy):
             scheduler.set_timesteps(self.num_inference_steps)
 
         trajectory = torch.randn(
-            size=condition_data.shape,
-            dtype=condition_data.dtype,
-            device=condition_data.device,
+            size=inpaint_data.shape,
+            dtype=inpaint_data.dtype,
+            device=inpaint_data.device,
             generator=generator,
         )
 
         for t in scheduler.timesteps.to(trajectory.device).long():
-            trajectory = torch.where(condition_mask, condition_data, trajectory)
+            # Inpaint: overwrite known positions with correctly-noised inpaint values so
+            # the UNet sees a consistent noise level across the whole trajectory.
+            if inpaint_mask.any():
+                t_batch = torch.full((inpaint_data.shape[0],), t, device=inpaint_data.device, dtype=torch.long)
+                noised_inpaint = scheduler.add_noise(inpaint_data, torch.randn_like(inpaint_data), t_batch)
+                trajectory = torch.where(inpaint_mask, noised_inpaint, trajectory)
             model_output = self.model(trajectory, t, global_cond=global_cond)
             trajectory = scheduler.step(
                 model_output, t, trajectory, generator=generator, **kwargs
             ).prev_sample
 
-        trajectory = torch.where(condition_mask, condition_data, trajectory)
+        # Final override: snap known positions to exact clean values after the last denoising step
+        trajectory = torch.where(inpaint_mask, inpaint_data, trajectory)
         return trajectory
 
     def predict_action(self, obs_dict: Dict[str, torch.Tensor], use_DDIM=False, **kwargs) -> Dict[str, torch.Tensor]:
-        assert "past_action" not in obs_dict
 
-        nobs = self.normalizer.normalize(obs_dict)
-        B = next(iter(nobs.values())).shape[0]
-        global_cond = self.obs_encoder(nobs, output_format="cat")
+        mixed_precision = getattr(self, "mixed_precision", None) or "no"
+        with torch.autocast(
+            device_type=self.device.type,
+            dtype=torch.bfloat16 if mixed_precision == "bf16" else torch.float16,
+            enabled=mixed_precision != "no",
+        ):
+            nobs = self.normalizer.normalize(obs_dict)
+            B = next(iter(nobs.values())).shape[0]
+            global_cond = self.obs_encoder(nobs, output_format="cat")
 
-        cond_data = torch.zeros(
-            B, self.prediction_horizon, self.action_dim, device=self.device, dtype=self.dtype
-        )
-        cond_mask = torch.zeros_like(cond_data, dtype=torch.bool)
+            inpaint_data = torch.zeros(
+                B, self.prediction_horizon, self.action_dim, device=self.device, dtype=self.dtype
+            )
+            inpaint_mask = torch.zeros_like(inpaint_data, dtype=torch.bool)
 
-        nsample = self.conditional_sample(
-            condition_data=cond_data,
-            condition_mask=cond_mask,
-            global_cond=global_cond,
-            use_ddim=use_DDIM,
-            **self.kwargs,
-        )
-        assert nsample.shape == (B, self.prediction_horizon, self.action_dim)
-        return {"action_pred": self.normalizer["action"].unnormalize(nsample)}
+            nsample = self.conditional_sample(
+                inpaint_data=inpaint_data,
+                inpaint_mask=inpaint_mask,
+                global_cond=global_cond,
+                use_ddim=use_DDIM,
+                **self.kwargs,
+            )
+            assert nsample.shape == (B, self.prediction_horizon, self.action_dim)
+            return {"action_pred": self.normalizer["action"].unnormalize(nsample)}
 
     # ── Training ───────────────────────────────────────────────────────────────
 

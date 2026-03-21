@@ -24,7 +24,6 @@ class ConditionalResidualBlock1D(nn.Module):
         cond_dim,
         kernel_size=3,
         n_groups=8,
-        cond_predict_scale=False,
     ):
         super().__init__()
 
@@ -36,15 +35,11 @@ class ConditionalResidualBlock1D(nn.Module):
         )
 
         # FiLM modulation https://arxiv.org/abs/1709.07871
-        # predicts per-channel scale and bias
-        cond_channels = out_channels
-        if cond_predict_scale:
-            cond_channels = out_channels * 2
-        self.cond_predict_scale = cond_predict_scale
+        # predicts per-channel scale and bias (affine transform)
         self.out_channels = out_channels
         self.cond_encoder = nn.Sequential(
             nn.Mish(),
-            nn.Linear(cond_dim, cond_channels),
+            nn.Linear(cond_dim, out_channels * 2),
             Rearrange("batch t -> batch t 1"),
         )
 
@@ -61,13 +56,10 @@ class ConditionalResidualBlock1D(nn.Module):
         """
         out = self.blocks[0](x)
         embed = self.cond_encoder(cond)
-        if self.cond_predict_scale:
-            embed = embed.reshape(embed.shape[0], 2, self.out_channels, 1)
-            scale = embed[:, 0, ...]
-            bias = embed[:, 1, ...]
-            out = scale * out + bias
-        else:
-            out = out + embed
+        embed = embed.reshape(embed.shape[0], 2, self.out_channels, 1)
+        scale = embed[:, 0, ...]
+        bias = embed[:, 1, ...]
+        out = scale * out + bias
         out = self.blocks[1](out)
         out = out + self.residual_conv(x)
         return out
@@ -98,7 +90,6 @@ class ConditionalUnet1D(nn.Module):
         down_dims=[256, 512, 1024],
         kernel_size=3,
         n_groups=8,
-        cond_predict_scale=False,
     ):
         super().__init__()
         # Dimension list: [input_dim, down_dims[0], down_dims[1], down_dims[2]]
@@ -138,7 +129,6 @@ class ConditionalUnet1D(nn.Module):
                         cond_dim=cond_dim,
                         kernel_size=kernel_size,
                         n_groups=n_groups,
-                        cond_predict_scale=cond_predict_scale,
                     ),
                     # Encoder for up path - will be added to last up layer
                     ConditionalResidualBlock1D(
@@ -147,7 +137,6 @@ class ConditionalUnet1D(nn.Module):
                         cond_dim=cond_dim,
                         kernel_size=kernel_size,
                         n_groups=n_groups,
-                        cond_predict_scale=cond_predict_scale,
                     ),
                 ]
             )
@@ -162,7 +151,6 @@ class ConditionalUnet1D(nn.Module):
                     cond_dim=cond_dim,
                     kernel_size=kernel_size,
                     n_groups=n_groups,
-                    cond_predict_scale=cond_predict_scale,
                 ),
                 ConditionalResidualBlock1D(
                     mid_dim,
@@ -170,7 +158,6 @@ class ConditionalUnet1D(nn.Module):
                     cond_dim=cond_dim,
                     kernel_size=kernel_size,
                     n_groups=n_groups,
-                    cond_predict_scale=cond_predict_scale,
                 ),
             ]
         )
@@ -188,7 +175,6 @@ class ConditionalUnet1D(nn.Module):
                             cond_dim=cond_dim,
                             kernel_size=kernel_size,
                             n_groups=n_groups,
-                            cond_predict_scale=cond_predict_scale,
                         ),
                         ConditionalResidualBlock1D(
                             dim_out,
@@ -196,7 +182,6 @@ class ConditionalUnet1D(nn.Module):
                             cond_dim=cond_dim,
                             kernel_size=kernel_size,
                             n_groups=n_groups,
-                            cond_predict_scale=cond_predict_scale,
                         ),
                         # Except at the last Down block, downsample using simple Conv1d
                         Downsample1d(dim_out) if not is_last else nn.Identity(),
@@ -217,7 +202,6 @@ class ConditionalUnet1D(nn.Module):
                             cond_dim=cond_dim,
                             kernel_size=kernel_size,
                             n_groups=n_groups,
-                            cond_predict_scale=cond_predict_scale,
                         ),
                         ConditionalResidualBlock1D(
                             dim_in,
@@ -225,7 +209,6 @@ class ConditionalUnet1D(nn.Module):
                             cond_dim=cond_dim,
                             kernel_size=kernel_size,
                             n_groups=n_groups,
-                            cond_predict_scale=cond_predict_scale,
                         ),
                         # Except at the last Up block, upsample using simple ConvTranspose1d
                         Upsample1d(dim_in) if not is_last else nn.Identity(),

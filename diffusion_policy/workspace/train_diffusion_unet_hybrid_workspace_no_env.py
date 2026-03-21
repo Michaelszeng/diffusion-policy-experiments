@@ -18,15 +18,16 @@ import hydra
 import numpy as np
 import torch
 import tqdm
+import torch.optim as optim
+from accelerate import Accelerator
+from accelerate.utils import DistributedDataParallelKwargs
 from omegaconf import ListConfig, OmegaConf
-from torch.cuda.amp import GradScaler, autocast
-from torch.nn.parallel import DataParallel
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
-import wandb
 from diffusion_policy.common.checkpoint_util import TopKCheckpointManager
 from diffusion_policy.common.json_logger import JsonLogger
-from diffusion_policy.common.pytorch_util import dict_apply, optimizer_to
+from diffusion_policy.common.pytorch_util import dict_apply
 from diffusion_policy.dataset.base_dataset import BaseImageDataset
 from diffusion_policy.model.common.lr_scheduler import get_scheduler
 from diffusion_policy.model.diffusion.ema_model import EMAModel
@@ -38,14 +39,6 @@ from diffusion_policy.workspace.base_workspace import BaseWorkspace
 OmegaConf.register_new_resolver("eval", eval, replace=True)
 
 
-class DataParallelWrapper(DataParallel):
-    def __getattr__(self, name):
-        try:
-            return super().__getattr__(name)
-        except AttributeError:
-            return getattr(self.module, name)
-
-
 class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
     include_keys = ["global_step", "epoch", "topk_managers"]  # Attributes to save as keys in ckpt
 
@@ -53,24 +46,15 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
         super().__init__(cfg, output_dir=output_dir)
         self.topk_managers = None
 
-        # set seed
         seed = cfg.training.seed
         torch.manual_seed(seed)
         np.random.seed(seed)
         random.seed(seed)
 
-        # configure model
-        num_GPU = torch.cuda.device_count()
-        self.model = hydra.utils.instantiate(cfg.policy)
-        if num_GPU > 0:
-            self.model = self.model.to(torch.device("cuda"))
-        else:
-            self.model = self.model.to(torch.device("cpu"))
+        # Instantiate model (device placement and DDP wrapping handled in run() via accelerator.prepare)
+        self.model: DiffusionUnetHybridImageTargetedPolicy = hydra.utils.instantiate(cfg.policy)
 
-        print(f"Running on {num_GPU} GPU(s).")
-        self.model = DataParallelWrapper(self.model, device_ids=range(num_GPU))
-
-        # load pretrained model if finetuning
+        # Load pretrained weights if finetuning from a checkpoint
         if "pretrained_checkpoint" in cfg and cfg.pretrained_checkpoint is not None:
             print(f"Loading pretrained model from {cfg.pretrained_checkpoint}.")
             path = pathlib.Path(cfg.pretrained_checkpoint)
@@ -79,107 +63,131 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
         else:
             print("Initializing model using default parameters.")
 
+        # Configure EMA model (a persistent copy of weights updated via exponential moving average)
         self.ema_model: DiffusionUnetHybridImageTargetedPolicy = None
         if cfg.training.use_ema:
             self.ema_model = copy.deepcopy(self.model)
 
-        # configure training state with variable learning rates
-        self.encoder_lr_scale = getattr(cfg.training, "encoder_lr_scale", 1.0)
-        self.use_variable_lr = getattr(cfg.training, "use_variable_lr", False)
+        # Support optional per-encoder learning rate scaling
+        self.encoder_lr_scale = getattr(cfg.training, "encoder_lr_scale", None)
 
-        if self.use_variable_lr and hasattr(self.model, "obs_encoder"):
-            # Check if this is MC3 encoder by looking for the specific policy class
-            # is_mc3_model = 'r3d' in self.model.__class__.__module__
-
-            # if is_mc3_model:
+        if self.encoder_lr_scale is not None and self.encoder_lr_scale != 1.0 and hasattr(self.model, "obs_encoder"):
             print(
-                f"Using variable learning rate: encoder LR = {cfg.optimizer.lr * self.encoder_lr_scale:.6f}, rest = {cfg.optimizer.lr:.6f}"
+                f"Using scaled encoder LR: encoder LR = {cfg.optimizer.lr * self.encoder_lr_scale:.6f}, "
+                f"rest = {cfg.optimizer.lr:.6f}"
             )
-
-            # Separate parameters for encoder and rest of model
             encoder_params = list(self.model.obs_encoder.parameters())
             encoder_param_ids = {id(p) for p in encoder_params}
-
             other_params = [p for p in self.model.parameters() if id(p) not in encoder_param_ids]
-
-            # Create parameter groups with different learning rates
-            param_groups = [
-                {
-                    "params": encoder_params,
-                    "lr": cfg.optimizer.lr * self.encoder_lr_scale,
-                },
-                {"params": other_params, "lr": cfg.optimizer.lr},
-            ]
-
-            # Create optimizer with parameter groups
-            import torch.optim as optim
-
-            optimizer_class = getattr(optim, cfg.optimizer._target_.split(".")[-1])  # Extract class name
-
+            optimizer_class = getattr(optim, cfg.optimizer._target_.split(".")[-1])
             optimizer_kwargs = dict(cfg.optimizer)
             optimizer_kwargs.pop("_target_")
             optimizer_kwargs.pop("lr")  # Remove base lr since we're setting per group
-
-            self.optimizer = optimizer_class(param_groups, **optimizer_kwargs)
+            self.optimizer = optimizer_class(
+                [{"params": encoder_params, "lr": cfg.optimizer.lr * self.encoder_lr_scale},
+                 {"params": other_params, "lr": cfg.optimizer.lr}],
+                **optimizer_kwargs,
+            )
         else:
-            print("Variable LR requested but not MC3 model - using standard optimizer")
             self.optimizer = hydra.utils.instantiate(cfg.optimizer, params=self.model.parameters())
 
-        # configure training state
+        # Configure training state
         self.global_step = 0
         self.epoch = 0
-
-        # Configure mixed precision training
-        amp_config = getattr(cfg.training, "use_amp", False)
-        self.use_amp = amp_config is not False
-        self.amp_dtype = torch.bfloat16 if amp_config == "bf16" else torch.float16
-        # GradScalar needed for fp16 to scale gradients up before backward pass (due to lack of precision)
-        self.scaler = GradScaler() if (self.use_amp and self.amp_dtype == torch.float16) else None
-        print(f"Mixed precision training: {'enabled' if self.use_amp else 'disabled'} (dtype: {amp_config if self.use_amp else 'N/A'})")
 
     def run(self):
         cfg = copy.deepcopy(self.cfg)
 
-        # Resume training
+        # Determine mixed precision from config ("no" / "fp16" / "bf16")
+        mixed_precision = getattr(cfg.training, "mixed_precision", None) or "no"
+
+        # Accelerator replaces: DataParallel, GradScaler, autocast, and wandb.init.
+        # find_unused_parameters=False is the safe default; set True only if needed.
+        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
+        accelerator = Accelerator(
+            log_with="wandb",
+            mixed_precision=mixed_precision,
+            kwargs_handlers=[ddp_kwargs],
+        )
+
+        # Init W&B logging via accelerator (only logs on main process)
+        wandb_cfg = OmegaConf.to_container(cfg.logging, resolve=True)
+        project_name = wandb_cfg.pop("project")
+        wandb_cfg["dir"] = str(self.output_dir)
+        wandb_cfg["settings"] = {"_disable_stats": True}
+        accelerator.init_trackers(
+            project_name=project_name,
+            config={**OmegaConf.to_container(cfg, resolve=True), "output_dir": self.output_dir},
+            init_kwargs={"wandb": wandb_cfg},
+        )
+
+        # Resume training from checkpoint if requested
         if cfg.training.resume:
             # Load user-specified checkpoint if provided
             if getattr(cfg.training, "checkpoint_path", None) is not None:
                 ckpt_path = pathlib.Path(cfg.training.checkpoint_path)
                 if ckpt_path.is_file():
-                    print(f"Resuming from user-specified checkpoint {ckpt_path}")
+                    accelerator.print(f"Resuming from user-specified checkpoint {ckpt_path}")
                     self.load_checkpoint(path=ckpt_path)
                     self.epoch += 1
                 else:
-                    print(f"ATTENTION: Resume requested but checkpoint {ckpt_path} not found. Starting from scratch.")
-            # Load latest checkpoint otherwise
+                    accelerator.print(f"ATTENTION: Resume requested but checkpoint {ckpt_path} not found. Starting from scratch.")
             else:
-                lastest_ckpt_path = self.get_checkpoint_path()
-                if lastest_ckpt_path.is_file():
-                    print(f"Resuming from checkpoint {lastest_ckpt_path}")
-                    self.load_checkpoint(path=lastest_ckpt_path)
-                    # self.epoch is loaded with the last completed epoch
-                    # the current epoch is the next epoch (hence += 1)
+                latest_ckpt_path = self.get_checkpoint_path()
+                if latest_ckpt_path.is_file():
+                    accelerator.print(f"Resuming from checkpoint {latest_ckpt_path}")
+                    self.load_checkpoint(path=latest_ckpt_path)
+                    # self.epoch is loaded with the last completed epoch;
+                    # the current epoch is the next one
                     self.epoch += 1
                 else:
-                    print(f"ATTENTION: Resume requested but no checkpoint supplied by user and latest checkpoint "
-                    f"{lastest_ckpt_path} not found. Starting from scratch.")
+                    accelerator.print(
+                        f"ATTENTION: Resume requested but no checkpoint supplied by user and latest checkpoint "
+                        f"{latest_ckpt_path} not found. Starting from scratch."
+                    )
 
-        # configure dataset and save normalizer
-        dataset: BaseImageDataset
-        dataset = hydra.utils.instantiate(cfg.task.dataset)
+        # Configure dataset
+        dataset: BaseImageDataset = hydra.utils.instantiate(cfg.task.dataset)
         assert isinstance(dataset, BaseImageDataset)
-        train_dataloader = DataLoader(dataset, **cfg.dataloader)
-        normalizer = dataset.get_normalizer()
-        torch.save(normalizer, os.path.join(self.output_dir, "normalizer.pt"))
 
-        # configure validation datasets
+        # Create training dataloader.
+        # For multi-GPU: use DistributedSampler so each process sees a disjoint shard.
+        # For single-GPU: use the regular dataloader config directly.
+        dataloader_cfg = OmegaConf.to_container(cfg.dataloader, resolve=True)
+        if accelerator.num_processes > 1:
+            shuffle = dataloader_cfg.pop("shuffle", True)
+            drop_last = dataloader_cfg.pop("drop_last", True)
+            train_sampler = DistributedSampler(
+                dataset,
+                num_replicas=accelerator.num_processes,
+                rank=accelerator.process_index,
+                shuffle=shuffle,
+                seed=cfg.training.seed,
+            )
+            train_dataloader = DataLoader(dataset, sampler=train_sampler, drop_last=drop_last, **dataloader_cfg)
+        else:
+            train_sampler = None
+            train_dataloader = DataLoader(dataset, **cfg.dataloader)
+
+        # Compute normalizer on the main process and save to disk, then all processes load it.
+        # This avoids redundant computation and ensures all processes use the same normalizer.
+        normalizer_path = os.path.join(self.output_dir, "normalizer.pt")
+        if accelerator.is_main_process:
+            normalizer = dataset.get_normalizer()
+            torch.save(normalizer, normalizer_path)
+        accelerator.wait_for_everyone()
+        normalizer = torch.load(normalizer_path)
+
+        # Configure validation datasets (not distributed — all processes see full val data)
         self.num_datasets = dataset.get_num_datasets()
         self.sample_probabilities = dataset.get_sample_probabilities()
         val_dataloaders = []
         for i in range(self.num_datasets):
             val_dataset = dataset.get_validation_dataset(i)
             val_dataloaders.append(DataLoader(val_dataset, **cfg.val_dataloader))
-        self._print_dataset_diagnostics(cfg, dataset, train_dataloader, val_dataloaders)
+        if accelerator.is_main_process:
+            self._print_dataset_diagnostics(cfg, dataset, train_dataloader, val_dataloaders)
+
         self.model.set_normalizer(normalizer)
         if cfg.training.use_ema:
             self.ema_model.set_normalizer(normalizer)
@@ -194,67 +202,66 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
             num_epochs = int(training_steps // single_epoch_steps)
             if training_steps % single_epoch_steps != 0:
                 num_epochs += 1
-            print(f"Training for {num_epochs} epochs to achieve {training_steps} steps.")
+            accelerator.print(f"Training for {num_epochs} epochs to achieve {training_steps} steps.")
             cfg.training.num_epochs = num_epochs
 
-        # configure lr scheduler
+        # Configure LR scheduler
         lr_scheduler = get_scheduler(
             cfg.training.lr_scheduler,
             optimizer=self.optimizer,
             num_warmup_steps=cfg.training.lr_warmup_steps,
             num_training_steps=(len(train_dataloader) * cfg.training.num_epochs)
             // cfg.training.gradient_accumulate_every,
-            # pytorch assumes stepping LRScheduler every epoch
-            # however huggingface diffusers steps it every batch
+            # pytorch assumes stepping LRScheduler every epoch;
+            # huggingface diffusers steps it every batch
             last_epoch=self.global_step - 1,
         )
 
+        # Log any gradient rescaling hooks that are registered on the obs encoder (debug only)
         if getattr(cfg.policy, "rescale_encoder_gradients", False):
             hooks_by_param = defaultdict(list)
             for name, p in self.model.obs_encoder.named_parameters():
-                # getattr will return {} if no hooks were registered
                 hooks = getattr(p, "_backward_hooks", {})
                 if hooks:
                     hooks_by_param[name] = list(hooks.items())
-
-            # Print a report
             for name, hook_list in hooks_by_param.items():
-                print(f"Param {name} has {len(hook_list)} hook(s):")
+                accelerator.print(f"Param {name} has {len(hook_list)} hook(s):")
                 for hook_id, fn in hook_list:
-                    print(f"  id={hook_id}, fn={fn}")
+                    accelerator.print(f"  id={hook_id}, fn={fn}")
 
-        # configure ema
+        # Configure EMA updater (the algorithm that updates self.ema_model each step)
         ema: EMAModel = None
         if cfg.training.use_ema:
             ema = hydra.utils.instantiate(cfg.ema, model=self.ema_model)
 
-        # configure logging
-        wandb_run = wandb.init(
-            dir=str(self.output_dir),
-            config=OmegaConf.to_container(cfg, resolve=True),
-            settings=wandb.Settings(
-                start_method="thread",
-                _disable_stats=True,  # Don't log stuff like CPU, GPU, system memory, etc. just to reduce data amount
-            ),
-            **cfg.logging,
-        )
-        wandb.config.update(
-            {
-                "output_dir": self.output_dir,
-            }
-        )
+        # Prepare model and optimizer with accelerate.
+        # This wraps the model in DDP (multi-GPU) and applies the mixed precision context to forward().
+        self.model, self.optimizer = accelerator.prepare(self.model, self.optimizer)
+        # Keep a reference to the unwrapped model for attribute access (normalizer, noise_trajectory, etc.)
+        unwrapped_model = accelerator.unwrap_model(self.model)
+        device = accelerator.device
 
-        # configure checkpoint
+        # EMA model is not prepared by accelerate; move it to device manually
+        if self.ema_model is not None:
+            self.ema_model.to(device)
+
+        # Propagate mixed_precision to the unwrapped model and EMA model.
+        # accelerate's autocast only wraps the DDP forward() call; predict_action is a separate 
+        # method that needs its own torch.autocast block gated on this attribute.
+        unwrapped_model.mixed_precision = mixed_precision
+        if self.ema_model is not None:
+            self.ema_model.mixed_precision = mixed_precision
+
+        accelerator.print(f"Running on {accelerator.num_processes} GPU(s), mixed_precision={mixed_precision}.")
+
+        # Configure checkpoint managers
         assert cfg.training.checkpoint_every % cfg.training.val_every == 0
-        
-        # Determine whether to save the last checkpoint and snapshot based on config
         save_last_ckpt = cfg.checkpoint.save_last_ckpt
         save_last_snapshot = cfg.checkpoint.save_last_snapshot
 
         # Initialize new topk managers if starting from scratch or loading an old checkpoint without them
         if self.topk_managers is None:
             if not isinstance(cfg.checkpoint.topk, ListConfig):  # Single checkpoint manager
-                # Configure single checkpoint manager
                 self.topk_managers = [
                     TopKCheckpointManager(
                         save_dir=os.path.join(self.output_dir, "checkpoints"),
@@ -298,17 +305,10 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                             )
                         )
 
-        # device transfer
-        device = torch.device(cfg.training.device)
-        self.model.to(device)
-        if self.ema_model is not None:
-            self.ema_model.to(device)
-        optimizer_to(self.optimizer, device)
-
-        # save batch for sampling
+        # Save one validation batch per dataset to use for DDPM/DDIM MSE evaluation
         val_sampling_batches = [None] * self.num_datasets
 
-        if cfg.training.debug:
+        if cfg.training.debug:  # Debug mode: just run for a couple epochs/steps
             cfg.training.num_epochs = 2
             cfg.training.max_train_steps = 3
             cfg.training.max_val_steps = 3
@@ -317,66 +317,54 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
             cfg.training.val_every = 1
             cfg.training.sample_every = 1
 
-        # training loop
+        # ── Training Loop ────────────────────────────────────────────────────
         log_path = os.path.join(self.output_dir, "logs.json.txt")
         resume_epoch = self.epoch
         with JsonLogger(log_path) as json_logger:
             for local_epoch_idx in range(resume_epoch, cfg.training.num_epochs):
+                # Set epoch on DistributedSampler so each epoch gets a different shuffle
+                if train_sampler is not None:
+                    train_sampler.set_epoch(local_epoch_idx)
+
                 step_log = dict()
-                # ========= train for this epoch ==========
                 train_losses = list()
                 with tqdm.tqdm(
                     train_dataloader,
                     desc=f"Training epoch {self.epoch}",
                     leave=False,
+                    disable=not accelerator.is_main_process,
                     mininterval=cfg.training.tqdm_interval_sec,
                 ) as tepoch:
                     for batch_idx, batch in enumerate(tepoch):
-                        # device transfer
+                        # Device transfer
                         batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
-                        # reorder channels from HWC to CHW to match robomimic's vision encoder
+                        # Reorder channels from HWC to CHW to match robomimic's vision encoder
                         for key in dataset.rgb_keys:
                             batch["obs"][key] = torch.moveaxis(batch["obs"][key], -1, 2) / 255.0
-                        # batch_size = batch["action"].shape[0]
-                        # print(f"Outside batch size: {batch_size}")
 
-                        # construct noisy trajectory
-                        trajectory = self.model.normalizer["action"].normalize(batch["action"])
-                        noisy_trajectory, timesteps, noise = self.model.noise_trajectory(trajectory)
+                        # Construct noisy trajectory using the unwrapped model's normalizer
+                        trajectory = unwrapped_model.normalizer["action"].normalize(batch["action"])
+                        noisy_trajectory, timesteps, noise = unwrapped_model.noise_trajectory(trajectory)
 
-                        # Forward pass with optional mixed precision
-                        if self.use_amp:
-                            with autocast(dtype=self.amp_dtype):
-                                pred = self.model(batch, noisy_trajectory, timesteps)
-                                raw_loss = self.model.compute_loss(trajectory, noise, pred)
-                                loss = raw_loss / cfg.training.gradient_accumulate_every
-                        else:
-                            pred = self.model(batch, noisy_trajectory, timesteps)
-                            raw_loss = self.model.compute_loss(trajectory, noise, pred)
-                            loss = raw_loss / cfg.training.gradient_accumulate_every
+                        # Forward pass — DDP wrapper applies autocast from mixed_precision
+                        pred = self.model(batch, noisy_trajectory, timesteps)
+                        raw_loss = unwrapped_model.compute_loss(trajectory, noise, pred)
+                        loss = raw_loss / cfg.training.gradient_accumulate_every
 
-                        # Backward pass with optional mixed precision
-                        if self.scaler is not None:
-                            self.scaler.scale(loss).backward()
-                        else:
-                            loss.backward()
+                        # Backward pass — accelerator handles gradient scaling (fp16 GradScaler)
+                        accelerator.backward(loss)
 
-                        # step optimizer
+                        # Step optimizer
                         if self.global_step % cfg.training.gradient_accumulate_every == 0:
-                            if self.scaler is not None:
-                                self.scaler.step(self.optimizer)
-                                self.scaler.update()
-                                self.optimizer.zero_grad()
-                            else:
-                                self.optimizer.step()
-                                self.optimizer.zero_grad()
+                            self.optimizer.step()
+                            self.optimizer.zero_grad()
                             lr_scheduler.step()
 
-                        # update ema
+                        # Update EMA model
                         if cfg.training.use_ema:
-                            ema.step(self.model)
+                            ema.step(unwrapped_model)
 
-                        # logging
+                        # Logging
                         raw_loss_cpu = raw_loss.item()
                         tepoch.set_postfix(loss=raw_loss_cpu, refresh=False)
                         train_losses.append(raw_loss_cpu)
@@ -389,9 +377,10 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
 
                         is_last_batch = batch_idx == (len(train_dataloader) - 1)
                         if not is_last_batch:
-                            # log of last step is combined with validation and rollout
-                            wandb_run.log(step_log, step=self.global_step)
-                            json_logger.log(step_log)
+                            # Log of last batch is combined with validation metrics below
+                            accelerator.log(step_log, step=self.global_step)
+                            if accelerator.is_main_process:
+                                json_logger.log(step_log)
                             self.global_step += 1
 
                         if (cfg.training.max_train_steps is not None) and batch_idx >= (
@@ -405,13 +394,10 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                 train_loss = np.mean(train_losses)
                 step_log["train_loss"] = train_loss
 
-                # ========= eval for this epoch ==========
-                policy = self.model
-                if cfg.training.use_ema:
-                    policy = self.ema_model
-                policy.eval()
-
-                # run validation
+                # ── Validation ───────────────────────────────────────────────────
+                # Use EMA model for evaluation if available, otherwise use unwrapped training model
+                eval_policy = self.ema_model if cfg.training.use_ema else unwrapped_model
+                eval_policy.eval()
                 if (self.epoch % cfg.training.val_every) == 0:
                     with torch.no_grad():
                         val_loss_per_dataset = []
@@ -422,28 +408,31 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                                 val_dataloader,
                                 desc=f"Dataset {dataset_idx} validation, epoch {self.epoch}",
                                 leave=False,
+                                disable=not accelerator.is_main_process,
                                 mininterval=cfg.training.tqdm_interval_sec,
                             ) as tepoch:
                                 for batch_idx, batch in enumerate(tepoch):
                                     batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
-                                    # reorder channels from HWC to CHW to match robomimic's vision encoder
+                                    # Reorder channels from HWC to CHW to match robomimic's vision encoder
                                     for key in dataset.rgb_keys:
                                         batch["obs"][key] = torch.moveaxis(batch["obs"][key], -1, 2) / 255.0
                                     if val_sampling_batches[dataset_idx] is None:
                                         val_sampling_batches[dataset_idx] = batch
 
-                                    # construct normalized noisy trajectory for inference
-                                    trajectory = self.model.normalizer["action"].normalize(batch["action"])
-                                    noisy_trajectory, timesteps, noise = self.model.noise_trajectory(trajectory)
+                                    # Construct normalized noisy trajectory
+                                    trajectory = eval_policy.normalizer["action"].normalize(batch["action"])
+                                    noisy_trajectory, timesteps, noise = eval_policy.noise_trajectory(trajectory)
 
-                                    # generate inpainting mask
-                                    condition_mask = self.model.mask_generator(trajectory.shape)
-                                    loss_mask = ~condition_mask
-
-                                    # forward pass and compute loss
-                                    pred = self.model(batch, noisy_trajectory, timesteps, condition_mask)
-                                    loss = self.model.compute_loss(trajectory, noise, pred, loss_mask)
-                                    val_losses.append(loss)
+                                    # Forward pass with explicit autocast to match training precision
+                                    # since eval_policy is not a DDP wrapper, autocast is not automatic
+                                    with torch.autocast(
+                                        device_type=device.type,
+                                        dtype=torch.bfloat16 if mixed_precision == "bf16" else torch.float16,
+                                        enabled=mixed_precision != "no",
+                                    ):
+                                        pred = eval_policy(batch, noisy_trajectory, timesteps)
+                                    loss = eval_policy.compute_loss(trajectory, noise, pred)
+                                    val_losses.append(loss.item())
 
                                     if (cfg.training.max_val_steps is not None) and batch_idx >= (
                                         cfg.training.max_val_steps - 1
@@ -452,19 +441,20 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                             # End of validation loss computation loop
 
                             if len(val_losses) > 0:
-                                val_loss = torch.mean(torch.tensor(val_losses)).item()
+                                val_loss = np.mean(val_losses)
                                 val_loss_per_dataset.append(val_loss)
-                                # log epoch average validation loss
+                                # Log epoch average validation loss
                                 step_log[f"val_loss_{dataset_idx}"] = val_loss
                         # End val_dataloader loop
 
-                        # Compute overall_val_loss
-                        overall_val_loss = 0
-                        for i in range(self.num_datasets):
-                            overall_val_loss += self.sample_probabilities[i] * val_loss_per_dataset[i]
+                        # Compute weighted aggregate validation loss across datasets
+                        overall_val_loss = sum(
+                            self.sample_probabilities[i] * val_loss_per_dataset[i]
+                            for i in range(self.num_datasets)
+                        )
                         step_log["val_loss"] = overall_val_loss
 
-                # run diffusion sampling on a _single_ validation batch from each dataset
+                # ── DDPM/DDIM clean action MSE validation ────────────────────────
                 if (self.epoch % cfg.training.sample_every) == 0 and cfg.training.log_val_mse:
                     with torch.no_grad():
                         val_ddpm_action_mses = []
@@ -477,82 +467,80 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                                 lambda x: x.to(device, non_blocking=True),
                             )
                             val_obs_dict = {key: val_batch[key] for key in val_batch.keys() if key != "action"}
-                            val_gt_action = val_sampling_batch["action"]
+                            val_gt_action = val_batch["action"]
 
                             # Evaluate MSE when diffusing with DDPM
                             if cfg.training.eval_mse_DDPM:
-                                result = policy.predict_action(val_obs_dict, use_DDIM=False)
+                                result = eval_policy.predict_action(val_obs_dict, use_DDIM=False)
                                 pred_action = result["action_pred"]
                                 mse = torch.nn.functional.mse_loss(pred_action, val_gt_action)
                                 step_log[f"val_ddpm_mse_{dataset_idx}"] = mse.item()
                                 val_ddpm_action_mses.append(mse.item())
 
-                            # Evaluate MSE when diffusing with DDPM
+                            # Evaluate MSE when diffusing with DDIM
                             if cfg.training.eval_mse_DDIM:
-                                result = policy.predict_action(val_obs_dict, use_DDIM=True)
+                                result = eval_policy.predict_action(val_obs_dict, use_DDIM=True)
                                 pred_action = result["action_pred"]
                                 mse = torch.nn.functional.mse_loss(pred_action, val_gt_action)
                                 step_log[f"val_ddim_mse_{dataset_idx}"] = mse.item()
                                 val_ddim_action_mses.append(mse.item())
 
                         # Compute weighted val action MSEs
-                        if cfg.training.eval_mse_DDPM:
-                            val_ = 0
-                            for i in range(self.num_datasets):
-                                val_ += self.sample_probabilities[i] * val_ddpm_action_mses[i]
-                            step_log["val_ddpm_mse"] = val_
-                        if cfg.training.eval_mse_DDIM:
-                            val_ = 0
-                            for i in range(self.num_datasets):
-                                val_ += self.sample_probabilities[i] * val_ddim_action_mses[i]
-                            step_log["val_ddim_mse"] = val_
+                        if cfg.training.eval_mse_DDPM and val_ddpm_action_mses:
+                            step_log["val_ddpm_mse"] = sum(
+                                self.sample_probabilities[i] * val_ddpm_action_mses[i]
+                                for i in range(self.num_datasets)
+                            )
+                        if cfg.training.eval_mse_DDIM and val_ddim_action_mses:
+                            step_log["val_ddim_mse"] = sum(
+                                self.sample_probabilities[i] * val_ddim_action_mses[i]
+                                for i in range(self.num_datasets)
+                            )
 
-                        del val_batch
-                        del val_obs_dict
-                        del val_gt_action
-                        del result
-                        del pred_action
-                        del mse
+                # ── Checkpointing (main process only) ────────────────────────────
+                if (self.epoch % cfg.training.checkpoint_every) == 0 and accelerator.is_main_process:
+                    # Pass the unwrapped model as an override so save_checkpoint serializes
+                    # clean weights rather than the DDP wrapper's state dict.
+                    ckpt_kwargs = {"state_dict_overrides": {"model": unwrapped_model}}
 
-                # checkpoint
-                if (self.epoch % cfg.training.checkpoint_every) == 0:
-                    # "latest.ckpt"
                     if save_last_ckpt:
-                        self.save_checkpoint()
-
-                    # Optional full state snapshot
+                        self.save_checkpoint(**ckpt_kwargs)
                     if save_last_snapshot:
                         self.save_snapshot()
 
-                    # sanitize metric names
-                    metric_dict = dict()
-                    for key, value in step_log.items():
-                        new_key = key.replace("/", "_")
-                        metric_dict[new_key] = value
+                    # Sanitize metric names (replace "/" with "_" for compatibility)
+                    metric_dict = {k.replace("/", "_"): v for k, v in step_log.items()}
 
-                    # Metricbased Top-K checkpointing
+                    # Metric-based Top-K checkpointing
                     topk_ckpt_paths = []
-                    for i, topk_manager in enumerate(topk_managers):
-                        protected_ckpts = self._get_protected_paths(i, topk_managers)
+                    for i, topk_manager in enumerate[TopKCheckpointManager](self.topk_managers):
+                        protected_ckpts = self._get_protected_paths(i, self.topk_managers)
                         ckpt_path = topk_manager.get_ckpt_path(metric_dict, protected_ckpts)
                         topk_ckpt_paths.append(ckpt_path)
 
-                    for i, topk_ckpt_path in enumerate(topk_ckpt_paths):
+                    for topk_ckpt_path in topk_ckpt_paths:
                         if topk_ckpt_path is not None:
-                            self.save_checkpoint(path=topk_ckpt_path)
+                            self.save_checkpoint(path=topk_ckpt_path, **ckpt_kwargs)
                             break
-                # last epoch => save last checkpoint
-                if self.epoch == cfg.training.num_epochs - 1 and save_last_ckpt:
-                    self.save_checkpoint()
-                # ========= eval end for this epoch ==========
-                policy.train()
 
-                # end of epoch
-                # log of last step is combined with validation and rollout
-                wandb_run.log(step_log, step=self.global_step)
-                json_logger.log(step_log)
+                # Save checkpoint at end of last epoch (main process only)
+                if self.epoch == cfg.training.num_epochs - 1 and save_last_ckpt and accelerator.is_main_process:
+                    self.save_checkpoint(state_dict_overrides={"model": unwrapped_model})
+
+                # Sync all processes after checkpointing before moving to next epoch
+                accelerator.wait_for_everyone()
+
+                eval_policy.train()
+
+                # Log of last step is combined with validation and rollout metrics
+                accelerator.log(step_log, step=self.global_step)
+                if accelerator.is_main_process:
+                    json_logger.log(step_log)
                 self.global_step += 1
                 self.epoch += 1
+
+        self.join_saving_thread()  # Wait for any in-flight checkpoint save to complete
+        accelerator.end_training()
 
     def _print_dataset_diagnostics(self, cfg, dataset, train_dataloader, val_dataloaders):
         print()
@@ -579,39 +567,9 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
             print(f"Number of validation demonstrations: {np.sum(dataset.val_masks[i])}")
             print(f"Number of training samples: {len(dataset.samplers[i])}")
             print(f"Number of validation samples: {len(val_dataset)}")
-            print(f"Approx. number of training batches: {len(dataset.samplers[i]) // cfg.dataloader.batch_size}")
-            print(f"Approx. number of validation batches: {len(val_dataset) // cfg.val_dataloader.batch_size}")
             print(f"Sample probability: {self.sample_probabilities[i]}")
             print()
         print("================================================")
-
-    def _get_protected_paths(self, topk_manager_idx, topk_managers):
-        """
-        Returns the paths that should not be deleted by topk_manager
-        """
-        if len(topk_managers) == 1:
-            return set()
-
-        topk_manager = topk_managers[topk_manager_idx]
-
-        protected_paths = set()
-        for manager in topk_managers:
-            protected_paths.update(manager.get_path_value_map().keys())
-
-        # Remove the paths that can be deleted
-        # If a ckpt is ONLY being tracked by topk_manager, it can be deleted
-        for path in topk_manager.get_path_value_map().keys():
-            protected = False
-            for i, manager in enumerate(topk_managers):
-                if i == topk_manager_idx:
-                    continue
-                if path in manager.get_path_value_map().keys():
-                    protected = True
-                    break
-            if not protected:
-                protected_paths.remove(path)
-
-        return protected_paths
 
 
 @hydra.main(

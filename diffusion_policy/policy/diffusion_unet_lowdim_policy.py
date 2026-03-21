@@ -13,7 +13,6 @@ from einops import rearrange, reduce
 
 from diffusion_policy.model.common.normalizer import LinearNormalizer
 from diffusion_policy.model.diffusion.conditional_unet1d import ConditionalUnet1D
-from diffusion_policy.model.diffusion.mask_generator import LowdimMaskGenerator
 from diffusion_policy.policy.base_lowdim_policy import BaseLowdimPolicy
 
 
@@ -31,7 +30,6 @@ class DiffusionUnetLowdimPolicy(BaseLowdimPolicy):
         down_dims=(256, 512, 1024),
         kernel_size=5,
         n_groups=8,
-        cond_predict_scale=True,
         use_target_cond=False,
         target_dim=None,
         # parameters passed to step
@@ -65,7 +63,6 @@ class DiffusionUnetLowdimPolicy(BaseLowdimPolicy):
             down_dims=down_dims,
             kernel_size=kernel_size,
             n_groups=n_groups,
-            cond_predict_scale=cond_predict_scale,
         )
 
         self.model = model
@@ -78,13 +75,6 @@ class DiffusionUnetLowdimPolicy(BaseLowdimPolicy):
         ddim_config.pop("variance_type", None)  # variance_type is only for DDPM
         self.DDIM_noise_scheduler = DDIMScheduler(**ddim_config)
 
-        self.mask_generator = LowdimMaskGenerator(
-            action_dim=action_dim,
-            obs_dim=0,
-            max_n_obs_steps=n_obs_steps,
-            fix_obs_steps=True,
-            action_visible=False,
-        )
         self.normalizer = LinearNormalizer()
         self.horizon = horizon
         self.obs_dim = obs_dim
@@ -105,8 +95,8 @@ class DiffusionUnetLowdimPolicy(BaseLowdimPolicy):
     # ========= inference  ============
     def conditional_sample(
         self,
-        condition_data,
-        condition_mask,
+        inpaint_data,
+        inpaint_mask,
         local_cond=None,
         global_cond=None,
         target_cond=None,
@@ -125,15 +115,19 @@ class DiffusionUnetLowdimPolicy(BaseLowdimPolicy):
             scheduler.set_timesteps(self.num_DDPM_inference_steps)
 
         trajectory = torch.randn(
-            size=condition_data.shape, dtype=condition_data.dtype, device=condition_data.device, generator=generator
+            size=inpaint_data.shape, dtype=inpaint_data.dtype, device=inpaint_data.device, generator=generator
         )
 
         if sample_for_vis:
             trajectories = []
 
         for t in scheduler.timesteps:
-            # 1. apply conditioning
-            trajectory[condition_mask] = condition_data[condition_mask]
+            # 1. Inpaint: overwrite known positions with correctly-noised inpaint values so
+            #    the UNet sees a consistent noise level across the whole trajectory.
+            if inpaint_mask.any():
+                t_batch = torch.full((inpaint_data.shape[0],), t, device=inpaint_data.device, dtype=torch.long)
+                noised_inpaint = scheduler.add_noise(inpaint_data, torch.randn_like(inpaint_data), t_batch)
+                trajectory[inpaint_mask] = noised_inpaint[inpaint_mask]
 
             # 2. predict model output
             model_output = model(trajectory, t, local_cond=local_cond, global_cond=global_cond, target_cond=target_cond)
@@ -145,8 +139,8 @@ class DiffusionUnetLowdimPolicy(BaseLowdimPolicy):
                 if t % 5 == 0 or t < 10:
                     trajectories.append(trajectory.clone())
 
-        # finally make sure conditioning is enforced
-        trajectory[condition_mask] = condition_data[condition_mask]
+        # Final override: snap known positions to exact clean values after the last denoising step
+        trajectory[inpaint_mask] = inpaint_data[inpaint_mask]
 
         if sample_for_vis:
             return trajectory, trajectories
@@ -168,73 +162,79 @@ class DiffusionUnetLowdimPolicy(BaseLowdimPolicy):
         if self.use_target_cond:
             assert "target" in obs_dict
 
-        # Normalize obs dictionary (flat normalizer structure)
-        nobs_dict = self.normalizer.normalize(obs_dict["obs"])
-        # Concatenate obs dictionary into a single tensor
-        nobs_list = [nobs_dict[key] for key in sorted(nobs_dict.keys())]
-        nobs = torch.cat(nobs_list, dim=-1)
+        mixed_precision = getattr(self, "mixed_precision", None) or "no"
+        with torch.autocast(
+            device_type=self.device.type,
+            dtype=torch.bfloat16 if mixed_precision == "bf16" else torch.float16,
+            enabled=mixed_precision != "no",
+        ):
+            # Normalize obs dictionary (flat normalizer structure)
+            nobs_dict = self.normalizer.normalize(obs_dict["obs"])
+            # Concatenate obs dictionary into a single tensor
+            nobs_list = [nobs_dict[key] for key in sorted(nobs_dict.keys())]
+            nobs = torch.cat(nobs_list, dim=-1)
 
-        ntarget = None
-        if self.use_target_cond:
-            ntarget = self.normalizer["target"].normalize(obs_dict["target"])
-        B, _, Do = nobs.shape
-        To = self.n_obs_steps
-        assert Do == self.obs_dim
-        T = self.horizon
-        Da = self.action_dim
+            ntarget = None
+            if self.use_target_cond:
+                ntarget = self.normalizer["target"].normalize(obs_dict["target"])
+            B, _, Do = nobs.shape
+            To = self.n_obs_steps
+            assert Do == self.obs_dim
+            T = self.horizon
+            Da = self.action_dim
 
-        # build input
-        device = self.device
-        dtype = self.dtype
+            # build input
+            device = self.device
+            dtype = self.dtype
 
-        # condition through global feature
-        global_cond = nobs[:, :To].reshape(nobs.shape[0], -1)
-        shape = (B, T, Da)
-        cond_data = torch.zeros(size=shape, device=device, dtype=dtype)
-        cond_mask = torch.zeros_like(cond_data, dtype=torch.bool)
-        local_cond = None
+            # condition through global feature
+            global_cond = nobs[:, :To].reshape(nobs.shape[0], -1)
+            shape = (B, T, Da)
+            inpaint_data = torch.zeros(size=shape, device=device, dtype=dtype)
+            inpaint_mask = torch.zeros_like(inpaint_data, dtype=torch.bool)
+            local_cond = None
 
-        # handle target conditioning
-        target_cond = None
-        if self.use_target_cond:
-            target_cond = ntarget.reshape(ntarget.shape[0], -1)  # B, D_t
+            # handle target conditioning
+            target_cond = None
+            if self.use_target_cond:
+                target_cond = ntarget.reshape(ntarget.shape[0], -1)  # B, D_t
 
-        # run sampling
-        nsample = self.conditional_sample(
-            cond_data,  # always inactive masks unless impainting
-            cond_mask,
-            local_cond=local_cond,
-            global_cond=global_cond,
-            target_cond=target_cond,
-            sample_for_vis=sample_for_vis,
-            use_DDIM=use_DDIM,
-            **self.kwargs,
-        )
+            # run sampling
+            nsample = self.conditional_sample(
+                inpaint_data,  # always inactive masks unless impainting
+                inpaint_mask,
+                local_cond=local_cond,
+                global_cond=global_cond,
+                target_cond=target_cond,
+                sample_for_vis=sample_for_vis,
+                use_DDIM=use_DDIM,
+                **self.kwargs,
+            )
 
-        if sample_for_vis:
-            nsample, trajectories = nsample
-        # unnormalize prediction
-        naction_pred = nsample[..., :Da]
-        action_pred = self.normalizer["action"].unnormalize(naction_pred)
+            if sample_for_vis:
+                nsample, trajectories = nsample
+            # unnormalize prediction
+            naction_pred = nsample[..., :Da]
+            action_pred = self.normalizer["action"].unnormalize(naction_pred)
 
-        unnormalized_trajectories = []
-        if sample_for_vis:
-            for traj in trajectories:
-                ntraj = traj[..., :Da]
-                traj_action_pred = self.normalizer["action"].unnormalize(ntraj)
-                unnormalized_trajectories.append(traj_action_pred)
+            unnormalized_trajectories = []
+            if sample_for_vis:
+                for traj in trajectories:
+                    ntraj = traj[..., :Da]
+                    traj_action_pred = self.normalizer["action"].unnormalize(ntraj)
+                    unnormalized_trajectories.append(traj_action_pred)
 
-        # get action
-        start = To - 1  # re-predict actions in observation horizon
-        end = start + self.n_action_steps
-        action = action_pred[:, start:end]
+            # get action
+            start = To - 1  # re-predict actions in observation horizon
+            end = start + self.n_action_steps
+            action = action_pred[:, start:end]
 
-        result = {"action": action, "action_pred": action_pred}
+            result = {"action": action, "action_pred": action_pred}
 
-        if sample_for_vis:
-            return result, unnormalized_trajectories
+            if sample_for_vis:
+                return result, unnormalized_trajectories
 
-        return result
+            return result
 
     # ========= training  ============
     def set_normalizer(self, normalizer: LinearNormalizer):
@@ -269,8 +269,8 @@ class DiffusionUnetLowdimPolicy(BaseLowdimPolicy):
         if self.use_target_cond:
             target_cond = ntarget.reshape(ntarget.shape[0], -1)  # B, D_t
 
-        # generate impainting mask
-        condition_mask = self.mask_generator(trajectory.shape)
+        # All actions are to be predicted; no inpainting needed
+        inpaint_mask = torch.zeros(trajectory.shape, dtype=torch.bool, device=trajectory.device)
 
         # Sample noise that we'll add to the images
         noise = torch.randn(trajectory.shape, device=trajectory.device)
@@ -284,10 +284,10 @@ class DiffusionUnetLowdimPolicy(BaseLowdimPolicy):
         noisy_trajectory = self.noise_scheduler.add_noise(trajectory, noise, timesteps)
 
         # compute loss mask
-        loss_mask = ~condition_mask
+        loss_mask = ~inpaint_mask
 
         # apply conditioning
-        noisy_trajectory[condition_mask] = trajectory[condition_mask]
+        noisy_trajectory[inpaint_mask] = trajectory[inpaint_mask]
 
         # Predict the noise residual
         pred = self.model(
@@ -307,3 +307,6 @@ class DiffusionUnetLowdimPolicy(BaseLowdimPolicy):
         loss = reduce(loss, "b ... -> b (...)", "mean")
         loss = loss.mean()
         return loss
+
+    def forward(self, batch):
+        return self.compute_loss(batch)
