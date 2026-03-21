@@ -8,7 +8,11 @@ from robomimic.scripts.generate_paper_configs import (
 import robomimic.utils.obs_utils as ObsUtils
 from robomimic.algo import algo_factory
 from robomimic.algo.algo import PolicyAlgo
-import robomimic.models.base_nets as rmobsc
+try:
+    import robomimic.models.obs_core as rmobsc  # robomimic >= 0.3
+    _ = rmobsc.CropRandomizer
+except (ImportError, AttributeError):
+    import robomimic.models.base_nets as rmobsc  # robomimic < 0.3
 import torch
 import torch.nn as nn
 from diffusion_policy.common.pytorch_util import replace_submodules
