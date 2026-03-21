@@ -532,8 +532,8 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
 
                     # Metricbased Top-K checkpointing
                     topk_ckpt_paths = []
-                    for i, topk_manager in enumerate(topk_managers):
-                        protected_ckpts = self._get_protected_paths(i, topk_managers)
+                    for i, topk_manager in enumerate(self.topk_managers):
+                        protected_ckpts = self._get_protected_paths(i, self.topk_managers)
                         ckpt_path = topk_manager.get_ckpt_path(metric_dict, protected_ckpts)
                         topk_ckpt_paths.append(ckpt_path)
 

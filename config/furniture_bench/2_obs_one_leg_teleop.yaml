@@ -115,7 +115,7 @@ task:
       max_train_episodes: null
       sampling_weight: null
       val_ratio: 0.0625
-    - path: ../benchmark-furniturebench-juicer/dataset/processed/diffik/sim/one_leg/teleop/low/success_translated.zarr
+    - path: ../benchmark-furniturebench-juicer/dataset/processed/diffik/sim/one_leg/teleop/low/success_processed_translated.zarr
       max_train_episodes: null
       sampling_weight: null
       val_ratio: 0.0625
