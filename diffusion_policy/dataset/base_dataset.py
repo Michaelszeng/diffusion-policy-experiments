@@ -56,6 +56,173 @@ class BaseLowdimDataset(torch.utils.data.Dataset):
         raise NotImplementedError()
 
 
+class BaseZarrLowdimDataset(BaseLowdimDataset):
+    """
+    Intermediate base class for zarr-backed, state-only (no image) datasets.
+
+    Provides the same zarr infrastructure as ``BaseZarrImageDataset``
+    (multi-dataset support, train/val masks, ImprovedDatasetSampler, normalizer)
+    without any image/RGB handling.
+
+    Subclasses must implement:
+        _get_buffer_keys()   - list of zarr keys to load (obs + "action")
+        _lowdim_key_map()    - {model_expected_key: zarr_key} if zarr uses different key names than we expect in this
+                                codebase, then map them in this dictionary.
+        __getitem__(idx)     - return {"obs": {...}, "action": tensor}
+
+    Attributes populated during __init__:
+        lowdim_keys, shape_meta, horizon, pad_before, pad_after, n_obs_steps
+        replay_buffers, zarr_paths, train_masks, val_masks, samplers
+        sample_probabilities, num_datasets
+    """
+
+    def __init__(
+        self,
+        zarr_configs: List[Dict],
+        shape_meta: Dict,
+        horizon: int = 1,
+        n_obs_steps: Optional[int] = None,
+        pad_before: int = 0,
+        pad_after: int = 0,
+        seed: int = 42,
+        val_ratio: float = 0.0,
+    ):
+        super().__init__()
+        self._validate_zarr_configs(zarr_configs)
+
+        obs_meta = shape_meta["obs"]
+        self.lowdim_keys = list(obs_meta.keys())
+        self.shape_meta = shape_meta
+
+        keys = self._get_buffer_keys()
+        key_first_k: Dict[str, int] = {}
+        if n_obs_steps is not None:
+            for k in keys:
+                key_first_k[k] = n_obs_steps
+        key_first_k["action"] = horizon
+
+        self.num_datasets = len(zarr_configs)
+        self.replay_buffers = []
+        self.train_masks: List[np.ndarray] = []
+        self.val_masks: List[np.ndarray] = []
+        self.samplers = []
+        self.zarr_paths: List[str] = []
+        self.sample_probabilities = np.zeros(len(zarr_configs))
+
+        for i, cfg in enumerate(zarr_configs):
+            zarr_path = os.path.expanduser(cfg["path"])
+            buf = ReplayBuffer.copy_from_path(zarr_path=zarr_path, store=zarr.MemoryStore(), keys=keys)
+            train_mask, val_mask = self._build_episode_masks(
+                n_episodes=buf.n_episodes,
+                val_ratio=cfg.get("val_ratio", val_ratio),
+                max_train_episodes=cfg.get("max_train_episodes", None),
+                seed=seed,
+            )
+            self.replay_buffers.append(buf)
+            self.zarr_paths.append(zarr_path)
+            self.train_masks.append(train_mask)
+            self.val_masks.append(val_mask)
+            self.samplers.append(ImprovedDatasetSampler(
+                replay_buffer=buf,
+                sequence_length=horizon,
+                shape_meta=shape_meta,
+                pad_before=pad_before,
+                pad_after=pad_after,
+                episode_mask=train_mask,
+                key_first_k=key_first_k,
+            ))
+            self.sample_probabilities[i] = cfg.get("sampling_weight") or np.sum(train_mask)
+
+        self.sample_probabilities = self._normalize_sample_probabilities(self.sample_probabilities)
+        self.horizon = horizon
+        self.pad_before = pad_before
+        self.pad_after = pad_after
+        self.n_obs_steps = n_obs_steps
+
+    def _get_buffer_keys(self) -> List[str]:
+        raise NotImplementedError()
+
+    def _lowdim_key_map(self) -> Dict[str, str]:
+        raise NotImplementedError()
+
+    @staticmethod
+    def _validate_zarr_configs(zarr_configs: List[Dict]) -> None:
+        num_null_weights = 0
+        N = len(zarr_configs)
+        for cfg in zarr_configs:
+            zarr_path = os.path.expanduser(cfg["path"])
+            if not os.path.exists(zarr_path):
+                raise ValueError(f"path {zarr_path} does not exist")
+            max_train_episodes = cfg.get("max_train_episodes", None)
+            if max_train_episodes is not None and max_train_episodes <= 0:
+                raise ValueError(f"max_train_episodes must be > 0, got {max_train_episodes}")
+            sampling_weight = cfg.get("sampling_weight", None)
+            if sampling_weight is None:
+                num_null_weights += 1
+            elif sampling_weight < 0:
+                raise ValueError(f"sampling_weight must be >= 0, got {sampling_weight}")
+        if num_null_weights not in [0, N]:
+            raise ValueError("Either all or none of the zarr_configs must have a sampling_weight")
+
+    @staticmethod
+    def _build_episode_masks(
+        n_episodes: int,
+        val_ratio: float,
+        max_train_episodes: Optional[int],
+        seed: int,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        val_mask = get_val_mask(n_episodes=n_episodes, val_ratio=val_ratio, seed=seed)
+        train_mask = ~val_mask
+        train_mask = downsample_mask(mask=train_mask, max_n=max_train_episodes, seed=seed)
+        return train_mask, val_mask
+
+    def _normalize_sample_probabilities(self, sample_probabilities: np.ndarray) -> np.ndarray:
+        total = np.sum(sample_probabilities)
+        assert total > 0, "Sum of sampling weights must be greater than 0"
+        return sample_probabilities / total
+
+    def get_normalizer(self, mode: str = "limits", **kwargs) -> LinearNormalizer:
+        assert mode == "limits", "Only supports limits (min-max) normalization mode"
+        key_map = self._lowdim_key_map()
+        input_stats: Dict = {}
+        for buf in self.replay_buffers:
+            data = {norm_key: buf[buf_key] for norm_key, buf_key in key_map.items()}
+            n = LinearNormalizer()
+            n.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
+            for key in key_map:
+                _max = n[key].params_dict.input_stats.max
+                _min = n[key].params_dict.input_stats.min
+                if key not in input_stats:
+                    input_stats[key] = {"max": _max, "min": _min}
+                else:
+                    input_stats[key]["max"] = torch.maximum(input_stats[key]["max"], _max)
+                    input_stats[key]["min"] = torch.minimum(input_stats[key]["min"], _min)
+        normalizer = LinearNormalizer()
+        normalizer.fit_from_input_stats(input_stats_dict=input_stats)
+        return normalizer
+
+    def get_validation_dataset(self) -> "BaseZarrLowdimDataset":
+        assert self.num_datasets == 1, (
+            "get_validation_dataset() requires num_datasets == 1; "
+            "use get_validation_dataset(index=...) for multi-dataset setups."
+        )
+        val_set = copy.copy(self)
+        val_set.samplers = [
+            ImprovedDatasetSampler(
+                replay_buffer=self.replay_buffers[0],
+                sequence_length=self.horizon,
+                shape_meta=self.shape_meta,
+                pad_before=self.pad_before,
+                pad_after=self.pad_after,
+                episode_mask=self.val_masks[0],
+            )
+        ]
+        return val_set
+
+    def __len__(self) -> int:
+        return sum(len(s) for s in self.samplers)
+
+
 class BaseImageDataset(torch.utils.data.Dataset):
     """
     Base class for multi-dataset image-based diffusion policy datasets.

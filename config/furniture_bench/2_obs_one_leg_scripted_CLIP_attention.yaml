@@ -11,14 +11,14 @@ checkpoint:
 dataloader:
   batch_size: 48
   num_workers: 8
-  persistent_workers: True
+  persistent_workers: true
   pin_memory: true
   shuffle: true
   prefetch_factor: 1
 val_dataloader:
   batch_size: 48
   num_workers: 8
-  persistent_workers: True
+  persistent_workers: true
   pin_memory: true
   drop_last: true  # Drop the last batch if it's not full
   shuffle: true
@@ -68,14 +68,23 @@ policy:  # Parameters to be passed to policy (i.e. the _target_ policy class bel
   shape_meta: ${shape_meta}
   horizon: ${horizon}
   obs_encoder:
-    _target_: diffusion_policy.model.vision.timm_obs_encoder.TimmObsEncoder
+    _target_: diffusion_policy.model.vision.timm_obs_encoderv2.TimmObsEncoder
     shape_meta: ${shape_meta}
-    model_name: vit_base_patch16_clip_224.openai
-    pretrained: true
     n_obs_steps: ${n_obs_steps}
-    feature_aggregation: cls
-    crop_ratio: 0.9    # effective crop: floor(224*0.9 / 16) * 16 = 192px
-    imagenet_norm: true
+    rgb:
+      model_name: vit_base_patch16_clip_224.openai
+      pretrained: true
+      frozen: false
+      transforms:
+        - type: RandomCrop
+          ratio: 0.9
+      token_mode: all_tokens  # pass all tokens for cross-attention conditioning
+      share_model: false      # separate backbone per camera
+      imagenet_norm: true
+    vision_features:
+      feature_mode: raw_tokens
+    lowdim:
+      project: true
   noise_scheduler:
     _target_: diffusers.schedulers.scheduling_ddpm.DDPMScheduler
     beta_end: 0.02

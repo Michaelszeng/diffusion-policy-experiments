@@ -1,4 +1,4 @@
-_target_: diffusion_policy.workspace.train_diffusion_unet_hybrid_workspace_no_env.TrainDiffusionUnetHybridWorkspaceNoEnv
+_target_: diffusion_policy.workspace.train_diffusion_unet_lowdim_workspace_no_env.TrainDiffusionUnetLowdimWorkspaceNoEnv
 seed: 42
 checkpoint:
   save_last_ckpt: true
@@ -7,16 +7,16 @@ checkpoint:
     format_str: epoch={epoch:03d}-val_loss={val_loss:.4f}-val_ddim_mse={val_ddim_mse:.6f}.ckpt
     k: 7
     mode: min
-    monitor_key: val_ddim_mse_0
+    monitor_key: val_ddim_mse
 dataloader:
-  batch_size: 48
+  batch_size: 64
   num_workers: 8
   persistent_workers: true
   pin_memory: true
   shuffle: true
   prefetch_factor: 1
 val_dataloader:
-  batch_size: 48
+  batch_size: 64
   num_workers: 8
   persistent_workers: true
   pin_memory: true
@@ -34,10 +34,10 @@ exp_name: defaults
 logging:  # wandb logging configuration
   group: null
   id: null
-  name: furniture_bench_2_obs_one_leg_teleop
+  name: furniture_bench_lowdim_2_obs_one_leg_scripted
   project: furniture_bench_one_leg
 multi_run:
-  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_hybrid_furniture_bench_2_obs_one_leg_teleop
+  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_lowdim_furniture_bench_2_obs_one_leg_scripted
   run_dir: data/outputs/${multi_run.wandb_name_base}
 horizon: ${eval:${n_obs_steps} + 14}
 n_action_steps: 8  # Inference-only parameter
@@ -47,39 +47,21 @@ shape_meta:
     shape:
     - 10
   obs:
-    color_image1:
-      shape:
-      - 3
-      - 224
-      - 224
-      type: rgb
-    color_image2:
-      shape:
-      - 3
-      - 224
-      - 224
-      type: rgb
     robot_state:
       shape:
       - 16
       type: low_dim
-policy:  # Parameters to be passed to policy (i.e. the _target_ policy class below)
-  _target_: diffusion_policy.policy.diffusion_unet_hybrid_image_targeted_policy.DiffusionUnetHybridImageTargetedPolicy
-  crop_shape:
-  - 212
-  - 212
-  diffusion_step_embed_dim: 128
-  down_dims:
-  - 256
-  - 512
-  - 1024
-  kernel_size: 5  # kernel size (in time-dimension) for 1D convolutions in UNet
-  n_groups: 8  # Number of groups for group norm
+    parts_poses:
+      shape:
+      - 35
+      type: low_dim
+policy:
+  _target_: diffusion_policy.policy.diffusion_unet_lowdim_policy.DiffusionUnetLowdimPolicy
+  shape_meta: ${shape_meta}
   horizon: ${horizon}
   n_action_steps: ${n_action_steps}
   n_obs_steps: ${n_obs_steps}
-  past_action_visible: false  # explicitely condition on past actions
-  DDPM_noise_scheduler:
+  noise_scheduler:
     _target_: diffusers.schedulers.scheduling_ddpm.DDPMScheduler
     beta_end: 0.02
     beta_schedule: squaredcos_cap_v2
@@ -89,39 +71,32 @@ policy:  # Parameters to be passed to policy (i.e. the _target_ policy class bel
     prediction_type: epsilon
     variance_type: fixed_small
   num_DDPM_inference_steps: 100  # DDPM scheduler is used during training/validation
-  num_DDIM_inference_steps: 10  # DDIM scheduler is used during inference
+  num_DDIM_inference_steps: 10   # DDIM scheduler is used during inference
+  diffusion_step_embed_dim: 128
+  down_dims:
+  - 256
+  - 512
+  - 1024
+  kernel_size: 5
+  n_groups: 8
   use_target_cond: false
   target_dim: null
-  shape_meta: ${shape_meta}
-  pretrained_encoder: false
-  inference_loading: false
 task:
   dataset:
-    _target_: diffusion_policy.dataset.furniture_bench_dataset.FurnitureBenchDataset
+    _target_: diffusion_policy.dataset.furniture_bench_lowdim_dataset.FurnitureBenchLowdimDataset
     shape_meta: ${shape_meta}
     horizon: ${horizon}
     n_obs_steps: ${n_obs_steps}
-    # We pad before and after the training episode to maximize data usage.
-    # Padding before repeats the first observation pad_before times so that the policy can start predicting actions right at the episode's start.
-    # Padding after just allows the policy to predict actions past the end of the episode (in this case, loss is measured against the final action repeated pad_after times).
     pad_after: ${eval:${policy.horizon} - 1}
     pad_before: ${eval:${task.dataset.n_obs_steps} - 1}
     seed: ${seed}
     zarr_configs:
-    - path: ../benchmark-furniturebench-juicer/dataset/imitation-juicer-data-processed-001/processed/sim/one_leg/teleop/low/success_translated.zarr
+    - path: ../benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/scripted/low/success_translated.zarr
       max_train_episodes: null
       sampling_weight: null
       val_ratio: 0.0625
-    - path: ../benchmark-furniturebench-juicer/dataset/processed/diffik/sim/one_leg/teleop/low/success_processed_translated.zarr
-      max_train_episodes: null
-      sampling_weight: null
-      val_ratio: 0.0625
-    # - path: ../benchmark-furniturebench-juicer/dataset/processed/diffik/sim/one_leg/teleop/med/success.zarr
-    #   max_train_episodes: null
-    #   sampling_weight: null
-    #   val_ratio: 0.0625
   name: furniture_bench
-  shape_meta: ${shape_meta} # not used?
+  shape_meta: ${shape_meta}
 task_name: furniture_bench
 training:
   mixed_precision: null  # bf16 or null
@@ -134,8 +109,8 @@ training:
   lr_warmup_steps: 500
   max_train_steps: null  # per epoch training steps
   max_val_steps: null
-  total_train_steps: 104600
-  num_epochs: null # 70 for 50, 2000; 200 for 50, 500
+  total_train_steps: 500000
+  num_epochs: null
   resume: false
   rollout_every: 5  # UNUSED -- no environment rollouts during training
   sample_every: ${training.checkpoint_every}  # validation using DDPM output
@@ -145,7 +120,7 @@ training:
   val_every: 1
   log_val_mse: true
   eval_mse_DDPM: true
-  eval_mse_DDIM: true
+  eval_mse_DDIM: true  # DDIM scheduler is used during inference
 optimizer:
   _target_: torch.optim.AdamW
   betas:

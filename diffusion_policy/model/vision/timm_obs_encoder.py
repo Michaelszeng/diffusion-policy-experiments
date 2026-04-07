@@ -63,10 +63,7 @@ class TimmObsEncoder(ModuleAttrMixin):
                 if image_shape is None:
                     image_shape = shape[1:]  # (H, W)
                 elif image_shape != shape[1:]:
-                    raise ValueError(
-                        f"All RGB keys must share the same (H, W). "
-                        f"Got {image_shape} and {shape[1:]}"
-                    )
+                    raise ValueError(f"All RGB keys must share the same (H, W). Got {image_shape} and {shape[1:]}")
             elif obs_type == "low_dim":
                 low_dim_keys.append(key)
 

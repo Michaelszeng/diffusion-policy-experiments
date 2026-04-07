@@ -11,14 +11,14 @@ checkpoint:
 dataloader:
   batch_size: 48
   num_workers: 8
-  persistent_workers: True
+  persistent_workers: true
   pin_memory: true
   shuffle: true
   prefetch_factor: 1
 val_dataloader:
   batch_size: 48
   num_workers: 8
-  persistent_workers: True
+  persistent_workers: true
   pin_memory: true
   drop_last: true  # Drop the last batch if it's not full
   shuffle: true
