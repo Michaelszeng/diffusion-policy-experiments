@@ -1,10 +1,8 @@
 import logging
 from typing import Union
 
-import einops
 import torch
 import torch.nn as nn
-from einops.layers.torch import Rearrange
 
 from diffusion_policy.model.diffusion.conv1d_components import (
     Conv1dBlock,
@@ -40,7 +38,6 @@ class ConditionalResidualBlock1D(nn.Module):
         self.cond_encoder = nn.Sequential(
             nn.Mish(),
             nn.Linear(cond_dim, out_channels * 2),
-            Rearrange("batch t -> batch t 1"),
         )
 
         # make sure dimensions compatible
@@ -248,7 +245,8 @@ class ConditionalUnet1D(nn.Module):
         target_cond: (B,target_dim)
         output: (B,T,input_dim)
         """
-        sample = einops.rearrange(sample, "b h t -> b t h")
+        # sample = einops.rearrange(sample, "b h t -> b t h")
+        sample = sample.permute(0, 2, 1)
 
         # 1. time
         timesteps = timestep
@@ -273,7 +271,8 @@ class ConditionalUnet1D(nn.Module):
         # encode local features
         h_local = list()
         if local_cond is not None:
-            local_cond = einops.rearrange(local_cond, "b h t -> b t h")
+            # local_cond = einops.rearrange(local_cond, "b h t -> b t h")
+            local_cond = local_cond.permute(0, 2, 1)
             resnet, resnet2 = self.local_cond_encoder
             x = resnet(local_cond, global_feature)
             h_local.append(x)
@@ -310,7 +309,8 @@ class ConditionalUnet1D(nn.Module):
 
         x = self.final_conv(x)
 
-        x = einops.rearrange(x, "b t h -> b h t")
+        # x = einops.rearrange(x, "b t h -> b h t")
+        x = x.permute(0, 2, 1)
         return x
 
 
@@ -335,7 +335,8 @@ class VariableConditionalUnet1D(ConditionalUnet1D):
         target_cond: (B,target_dim)
         output: (B,T,input_dim)
         """
-        sample = einops.rearrange(sample, "b h t -> b t h")
+        # sample = einops.rearrange(sample, "b h t -> b t h")
+        sample = sample.permute(0, 2, 1)
 
         # 1. time
         timesteps = timestep
@@ -363,7 +364,8 @@ class VariableConditionalUnet1D(ConditionalUnet1D):
         # encode local features
         h_local = list()
         if local_cond is not None:
-            local_cond = einops.rearrange(local_cond, "b h t -> b t h")
+            # local_cond = einops.rearrange(local_cond, "b h t -> b t h")
+            local_cond = local_cond.permute(0, 2, 1)
             resnet, resnet2 = self.local_cond_encoder
             x = resnet(local_cond, global_feature)
             h_local.append(x)
@@ -400,5 +402,6 @@ class VariableConditionalUnet1D(ConditionalUnet1D):
 
         x = self.final_conv(x)
 
-        x = einops.rearrange(x, "b t h -> b h t")
+        # x = einops.rearrange(x, "b t h -> b h t")
+        x = x.permute(0, 2, 1)
         return x

@@ -139,7 +139,6 @@ class DiffusionUnetTimmFilmPolicy(BaseImagePolicy):
                 inpaint_mask=inpaint_mask,
                 global_cond=global_cond,
                 use_ddim=use_DDIM,
-                **self.kwargs,
             )
             assert nsample.shape == (B, self.prediction_horizon, self.action_dim)
             return {"action_pred": self.normalizer["action"].unnormalize(nsample)}

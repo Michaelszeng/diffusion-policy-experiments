@@ -232,6 +232,15 @@ class TrainDiffusionUnetTimmWorkspaceNoEnv(BaseWorkspace):
         if self.ema_model is not None:
             self.ema_model.to(device)
 
+        # Optionally compile the diffusion UNet (the hot inner loop).
+        # NOTE: currently untested
+        if getattr(cfg.training, "use_torch_compile", False):
+            compile_mode = getattr(cfg.training, "torch_compile_mode", "default")
+            unwrapped_model.model = torch.compile(unwrapped_model.model, mode=compile_mode)
+            if self.ema_model is not None:
+                self.ema_model.model = torch.compile(self.ema_model.model, mode=compile_mode)
+            accelerator.print(f"torch.compile enabled on ConditionalUnet1D model only (mode={compile_mode}).")
+
         # Propagate mixed_precision to the unwrapped model and EMA model so that
         # predict_action's internal torch.autocast works correctly.
         # (compute_loss is not forward(), so DDP autocast does NOT apply there automatically)
@@ -334,6 +343,9 @@ class TrainDiffusionUnetTimmWorkspaceNoEnv(BaseWorkspace):
 
                         # Step optimizer
                         if self.global_step % cfg.training.gradient_accumulate_every == 0:
+                            grad_clip = getattr(cfg.training, "gradient_clip_val", None)
+                            if grad_clip is not None:
+                                accelerator.clip_grad_norm_(self.model.parameters(), grad_clip)
                             self.optimizer.step()
                             self.optimizer.zero_grad()
                             lr_scheduler.step()

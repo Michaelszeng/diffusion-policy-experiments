@@ -115,7 +115,10 @@ task:
 task_name: planar_pushing
 training:
   mixed_precision: null  # bf16 or null
+  use_torch_compile: false
+  torch_compile_mode: default  # default | reduce-overhead | max-autotune
   checkpoint_every: 5
+  gradient_clip_val: 1.0  # max gradient norm; critical for bf16 stability
   debug: false
   device: cuda
   gradient_accumulate_every: 1
