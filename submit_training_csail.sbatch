@@ -6,8 +6,8 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=1
-#SBATCH --cpus-per-task=40
-#SBATCH --mem=384G
+#SBATCH --cpus-per-task=20
+#SBATCH --mem=256G
 #SBATCH --time=120:00:00
 #SBATCH --output=logs/slurm-%j.out
 #SBATCH --error=logs/slurm-%j.err
@@ -18,11 +18,15 @@
 # ============================================================================
 # Training hyperparameters
 # ============================================================================
-BATCH_SIZE=768
+BATCH_SIZE=64
+LR=1e-4
+
 NUM_WORKERS=8
-LR=1e-3
 RESUME=True  # NOTE: always set to True so that requeueing will automatically resume from the last checkpoint
 CHECKPOINT_PATH=""  # .ckpt file (or empty for latest.ckpt)
+
+USE_TORCH_COMPILE=false
+TORCH_COMPILE_MODE='default'
 # ============================================================================
 
 DATE=`date +"%Y.%m.%d"`
@@ -44,10 +48,17 @@ mkdir -p logs
 
 # --- WANDB Authentication ---
 export WANDB_USERNAME="michzeng"
-export WANDB_API_KEY="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"
+SECRETS_FILE="$SLURM_SUBMIT_DIR/.secrets"
+if [ -f "$SECRETS_FILE" ]; then
+    source "$SECRETS_FILE"
+    echo "Loaded secrets from $SECRETS_FILE"
+else
+    echo "ERROR: $SECRETS_FILE not found. Create it from .secrets.template before submitting." >&2
+    exit 1
+fi
 echo "WANDB_USERNAME and WANDB_API_KEY set for authentication."
 
-export TORCH_LOGS="recompiles"
+export TORCH_LOGS="recompiles"  # Print torch recompilation logs to stdout
 export HYDRA_FULL_ERROR=1
 
 # ============================================================================
@@ -78,8 +89,17 @@ export HYDRA_FULL_ERROR=1
 
 # --- Furniture Bench ---
 EXPERIMENT_CLASS=furniture_bench
-EXPERIMENT_NAME=2_obs_one_leg_teleop
-# EXPERIMENT_NAME=2_obs_one_leg_scripted
+# EXPERIMENT_NAME=2_obs_one_leg_teleop  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_scripted  # batch size 64, LR 1e-4
+EXPERIMENT_NAME=2_obs_one_leg_scripted_v2_dataset  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_scripted_no_pressure  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_scripted_screw_z_pressure  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_teleop_CLIP_film  # batch size 48, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_scripted_CLIP_film  # batch size 48, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_teleop_CLIP_attention  # batch size 48, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_scripted_CLIP_attention  # batch size 48, LR 1e-4
+
+# EXPERIMENT_NAME=2_obs_one_leg_teleop_no_robust_rearrangement_data  # batch size 768
 
 # --- Experiment Configuration ---
 CONFIG_DIR=config/${EXPERIMENT_CLASS}
@@ -99,6 +119,13 @@ echo "=========================================="
 
 export PYTHONPATH=$PWD:$PYTHONPATH
 
+# When torch.compile is enabled, drop the last incomplete batch to prevent
+# shape-change recompiles at epoch boundaries (e.g. einops SymInt hash errors).
+COMPILE_ARGS=""
+if [ "$USE_TORCH_COMPILE" = "true" ]; then
+    COMPILE_ARGS="training.use_torch_compile=true training.torch_compile_mode=$TORCH_COMPILE_MODE +dataloader.drop_last=true"
+fi
+
 if [ -z "$CHECKPOINT_PATH" ] || [ "$CHECKPOINT_PATH" == "null" ]; then
     python train.py \
         --config-dir=$CONFIG_DIR \
@@ -107,7 +134,9 @@ if [ -z "$CHECKPOINT_PATH" ] || [ "$CHECKPOINT_PATH" == "null" ]; then
         dataloader.batch_size=$BATCH_SIZE \
         dataloader.num_workers=$NUM_WORKERS \
         optimizer.lr=$LR \
-        training.resume=$RESUME
+        training.resume=$RESUME \
+        training.mixed_precision=bf16 \
+        $COMPILE_ARGS
 else
     python train.py \
         --config-dir=$CONFIG_DIR \
@@ -117,5 +146,7 @@ else
         dataloader.num_workers=$NUM_WORKERS \
         optimizer.lr=$LR \
         training.resume=$RESUME \
+        training.mixed_precision=bf16 \
+        $COMPILE_ARGS \
         training.checkpoint_path=\"$CHECKPOINT_PATH\"
 fi

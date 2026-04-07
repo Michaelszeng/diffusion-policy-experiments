@@ -94,7 +94,6 @@ policy:  # Parameters to be passed to policy (i.e. the _target_ policy class bel
   - 1024
   kernel_size: 5  # kernel size (in time-dimension) for 1D convolutions in UNet
   n_groups: 8  # Number of groups for group norm
-  cond_predict_scale: true
   input_pertub: 0.1
 task:
   dataset:
@@ -110,7 +109,7 @@ task:
       max_train_episodes: null
       sampling_weight: null
       val_ratio: 0.0625
-    - path: ../benchmark-furniturebench-juicer/dataset/processed/diffik/sim/one_leg/teleop/low/success_translated.zarr
+    - path: ../benchmark-furniturebench-juicer/dataset/processed/diffik/sim/one_leg/teleop/low/success_processed_translated.zarr
       max_train_episodes: null
       sampling_weight: null
       val_ratio: 0.0625
@@ -119,6 +118,9 @@ task:
 task_name: furniture_bench
 training:
   mixed_precision: null  # bf16 or null
+  use_torch_compile: false
+  torch_compile_mode: default  # default | reduce-overhead | max-autotune
+  gradient_clip_val: 1.0  # max gradient norm; critical for bf16 stability
   checkpoint_path: null
   checkpoint_every: 5
   debug: false
@@ -128,7 +130,7 @@ training:
   lr_warmup_steps: 500
   max_train_steps: null  # per epoch training steps
   max_val_steps: null
-  total_train_steps: 104600
+  total_train_steps: 250000
   num_epochs: null
   resume: false
   rollout_every: 5  # UNUSED -- no environment rollouts during training

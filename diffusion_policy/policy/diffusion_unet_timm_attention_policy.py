@@ -173,7 +173,6 @@ class DiffusionUnetTimmAttentionPolicy(BaseImagePolicy):
                 modality_indices=modalities,
                 range_indices=ranges,
                 use_ddim=use_DDIM,
-                **self.kwargs,
             )
             assert nsample.shape == (B, self.prediction_horizon, self.action_dim)
             return {"action_pred": self.normalizer["action"].unnormalize(nsample)}

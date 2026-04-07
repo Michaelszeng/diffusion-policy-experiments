@@ -122,6 +122,7 @@ task_name: maniskill_limited_data
 training:
   mixed_precision: null  # bf16 or null
   checkpoint_path: null
+  gradient_clip_val: 1.0  # max gradient norm; critical for bf16 stability
   checkpoint_every: 5
   debug: false
   device: cuda

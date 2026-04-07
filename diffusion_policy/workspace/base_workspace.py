@@ -112,10 +112,14 @@ class BaseWorkspace:
             if hasattr(value_for_sd, "state_dict") and hasattr(value_for_sd, "load_state_dict"):
                 # modules, optimizers and samplers etc
                 if key not in exclude_keys:
+                    sd = value_for_sd.state_dict()
+                    # Strip the "._orig_mod." infix that torch.compile inserts so
+                    # checkpoints are always saved in canonical (uncompiled) format.
+                    sd = _strip_orig_mod(sd)
                     if use_thread:
-                        payload["state_dicts"][key] = _copy_to_cpu(value_for_sd.state_dict())
+                        payload["state_dicts"][key] = _copy_to_cpu(sd)
                     else:
-                        payload["state_dicts"][key] = value_for_sd.state_dict()
+                        payload["state_dicts"][key] = sd
             elif key in include_keys:
                 payload["pickles"][key] = dill.dumps(value)
         if use_thread:
@@ -138,6 +142,11 @@ class BaseWorkspace:
 
         for key, value in payload["state_dicts"].items():
             if key not in exclude_keys:
+                # torch.compile wraps modules in OptimizedModule, whose state_dict() keys
+                # carry a "._orig_mod." infix (e.g. "obs_encoder._orig_mod.nets.0.weight").
+                # Technically, we already strip this infix before saving the checkpoint, 
+                # but we have this extra check and removal to be safe.
+                value = _strip_orig_mod(value)
                 self.__dict__[key].load_state_dict(value, **kwargs)
         for key in include_keys:
             if key in payload["pickles"]:
@@ -233,3 +242,18 @@ def _copy_to_cpu(x):
         return [_copy_to_cpu(k) for k in x]
     else:
         return copy.deepcopy(x)
+
+
+def _strip_orig_mod(state_dict):
+    """Remove the '._orig_mod.' infix inserted by torch.compile's OptimizedModule.
+
+    torch.compile wraps nn.Module in an OptimizedModule that stores the original
+    module at _orig_mod, causing state_dict() keys like 'layer._orig_mod.weight'.
+    Stripping this infix produces a canonical state dict that can be loaded into
+    either compiled or uncompiled models without key mismatches.
+    """
+    if not isinstance(state_dict, dict):
+        return state_dict
+    if not any("._orig_mod." in k for k in state_dict):
+        return state_dict
+    return {k.replace("._orig_mod.", "."): v for k, v in state_dict.items()}

@@ -259,7 +259,7 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
                 noised_inpaint = scheduler.add_noise(inpaint_data, torch.randn_like(inpaint_data), t_batch)
                 trajectory[inpaint_mask] = noised_inpaint[inpaint_mask]
             # 2. predict model output
-            model_output = model(trajectory, t, global_cond=global_cond, target_cond=target_cond)
+            model_output = model(trajectory, t.to(trajectory.device), global_cond=global_cond, target_cond=target_cond)
             # 3. compute previous image: x_t -> x_t-1
             trajectory = scheduler.step(model_output, t, trajectory, generator=generator, **kwargs).prev_sample
 

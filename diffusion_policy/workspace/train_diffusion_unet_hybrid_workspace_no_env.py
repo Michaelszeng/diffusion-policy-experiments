@@ -245,6 +245,17 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
         if self.ema_model is not None:
             self.ema_model.to(device)
 
+        # Optionally compile the diffusion UNet (the hot inner loop)
+        # NOTE: not well tested (unsure if this speeds up training or not)
+        if getattr(cfg.training, "use_torch_compile", False):
+            compile_mode = getattr(cfg.training, "torch_compile_mode", "default")
+            unwrapped_model.model = torch.compile(unwrapped_model.model, mode=compile_mode)
+            # unwrapped_model.obs_encoder = torch.compile(unwrapped_model.obs_encoder, mode=compile_mode)
+            if self.ema_model is not None:
+                self.ema_model.model = torch.compile(self.ema_model.model, mode=compile_mode)
+                # self.ema_model.obs_encoder = torch.compile(self.ema_model.obs_encoder, mode=compile_mode)
+            accelerator.print(f"torch.compile enabled on ConditionalUnet1D model only (mode={compile_mode}).")
+
         # Propagate mixed_precision to the unwrapped model and EMA model.
         # accelerate's autocast only wraps the DDP forward() call; predict_action is a separate 
         # method that needs its own torch.autocast block gated on this attribute.
@@ -356,6 +367,9 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
 
                         # Step optimizer
                         if self.global_step % cfg.training.gradient_accumulate_every == 0:
+                            grad_clip = getattr(cfg.training, "gradient_clip_val", None)
+                            if grad_clip is not None:
+                                accelerator.clip_grad_norm_(self.model.parameters(), grad_clip)
                             self.optimizer.step()
                             self.optimizer.zero_grad()
                             lr_scheduler.step()
