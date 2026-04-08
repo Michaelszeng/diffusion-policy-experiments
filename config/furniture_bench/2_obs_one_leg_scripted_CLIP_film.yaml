@@ -126,7 +126,7 @@ training:
   lr_warmup_steps: 500
   max_train_steps: null  # per epoch training steps
   max_val_steps: null
-  total_train_steps: 250000
+  total_train_steps: 800000
   num_epochs: null
   resume: false
   rollout_every: 5  # UNUSED -- no environment rollouts during training
