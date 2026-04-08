@@ -74,6 +74,8 @@ python prune_idle.py data/diffusion_experiments/planar_pushing/sim_sim_tee_data_
 python train.py --config-dir=config/planar_pushing --config-name=2_obs.yaml hydra.run.dir=data/outputs/planar_pushing/2_obs/
 ```
 
+Add `training.resume=True` to resume an existing run
+
 ### Running on Supercloud:
 ```bash
 # Interactively:
