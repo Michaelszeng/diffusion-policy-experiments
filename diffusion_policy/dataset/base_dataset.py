@@ -285,11 +285,18 @@ class BaseImageDataset(torch.utils.data.Dataset):
         )
 
     def _apply_color_jitter(self, data: Dict) -> Dict:
-        """Jitter all RGB cameras with the same random transform (uint8 HWC → float32 CHW)."""
+        """Jitter all RGB cameras with the same random transform.
+
+        Input:  uint8 HWC [0, 255]
+        Output: float32 HWC [0, 255]  (same layout as the passthrough normalizer expects)
+        """
         keys = self.rgb_keys
         T = data["obs"][keys[0]].shape[0]
+        # HWC[0,255] → CHW[0,1] for torchvision ColorJitter
         stacked = np.moveaxis(np.concatenate([data["obs"][k] for k in keys], axis=0), -1, 1).astype(np.float32) / 255.0
         jittered = self.transforms(torch.from_numpy(stacked)).numpy()
+        # CHW[0,1] → HWC[0,255] to match passthrough-normalizer / encoder expectations
+        jittered = np.moveaxis(jittered, 1, -1) * 255.0
         for i, key in enumerate(keys):
             data["obs"][key] = jittered[i * T : (i + 1) * T]
         return data
