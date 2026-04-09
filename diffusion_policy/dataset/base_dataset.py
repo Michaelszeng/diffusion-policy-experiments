@@ -11,6 +11,7 @@ from diffusion_policy.common.normalize_util import get_image_range_normalizer
 from diffusion_policy.common.replay_buffer import ReplayBuffer
 from diffusion_policy.common.sampler import ImprovedDatasetSampler, downsample_mask, get_val_mask
 from diffusion_policy.model.common.normalizer import LinearNormalizer
+from diffusion_policy.common.normalize_util import get_image_passthrough_normalizer
 
 
 def gaussian_kernel(kernel_size=9, sigma=3, channels=3):
@@ -371,7 +372,6 @@ class BaseImageDataset(torch.utils.data.Dataset):
         # All image keys use a passthrough normalizer: uint8 [0,255] → float [0,255].
         # Each observation encoder is responsible for its own channel ordering,
         # scaling, and backend-specific normalization.
-        from diffusion_policy.common.normalize_util import get_image_passthrough_normalizer
         for key in self.rgb_keys:
             normalizer[key] = get_image_passthrough_normalizer()
         return normalizer

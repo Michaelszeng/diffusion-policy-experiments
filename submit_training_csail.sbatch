@@ -91,13 +91,10 @@ export HYDRA_FULL_ERROR=1
 EXPERIMENT_CLASS=furniture_bench
 # EXPERIMENT_NAME=2_obs_one_leg_teleop  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted  # batch size 64, LR 1e-4
-EXPERIMENT_NAME=2_obs_one_leg_scripted_v2_dataset  # batch size 64, LR 1e-4
+EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_scripted_v2_dataset  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_no_pressure  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_screw_z_pressure  # batch size 64, LR 1e-4
-# EXPERIMENT_NAME=2_obs_one_leg_teleop_CLIP_film  # batch size 48, LR 1e-4
-# EXPERIMENT_NAME=2_obs_one_leg_scripted_CLIP_film  # batch size 48, LR 1e-4
-# EXPERIMENT_NAME=2_obs_one_leg_teleop_CLIP_attention  # batch size 48, LR 1e-4
-# EXPERIMENT_NAME=2_obs_one_leg_scripted_CLIP_attention  # batch size 48, LR 1e-4
 
 # EXPERIMENT_NAME=2_obs_one_leg_teleop_no_robust_rearrangement_data  # batch size 768
 
