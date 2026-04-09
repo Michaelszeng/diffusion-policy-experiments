@@ -368,13 +368,12 @@ class BaseImageDataset(torch.utils.data.Dataset):
         # Create the final normalizer based on the global min/max in input_states
         normalizer = LinearNormalizer()
         normalizer.fit_from_input_stats(input_stats_dict=input_stats)
-        # Create a normalizer for the RGB keys.
-        # When normalize_images=False (e.g. for ResNetObsEncoder which normalizes
-        # internally), use a simple /255 normalizer to get [0, 1] float instead.
-        from diffusion_policy.common.normalize_util import get_image_to_float_normalizer
-        use_range_norm = getattr(self, "normalize_images", True)
+        # All image keys use a passthrough normalizer: uint8 [0,255] → float [0,255].
+        # Each observation encoder is responsible for its own channel ordering,
+        # scaling, and backend-specific normalization.
+        from diffusion_policy.common.normalize_util import get_image_passthrough_normalizer
         for key in self.rgb_keys:
-            normalizer[key] = get_image_range_normalizer() if use_range_norm else get_image_to_float_normalizer()
+            normalizer[key] = get_image_passthrough_normalizer()
         return normalizer
 
     def load_replay_buffer(self, path: str, keys: List[str], config: Dict):
@@ -428,10 +427,8 @@ class BaseZarrImageDataset(BaseImageDataset):
         seed: int = 42,
         val_ratio: float = 0.0,
         color_jitter: Optional[Dict] = None,
-        normalize_images: bool = True,
     ):
         super().__init__()
-        self.normalize_images = normalize_images
         self._validate_zarr_configs(zarr_configs)
 
         obs_meta = shape_meta["obs"]

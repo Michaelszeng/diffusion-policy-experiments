@@ -23,13 +23,16 @@ def get_range_normalizer_from_stat(stat, output_max=1, output_min=-1, range_eps=
     )
 
 
-def get_image_to_float_normalizer():
+def get_image_passthrough_normalizer():
     """
-    Maps uint8 images [0, 255] to float [0, 1] with no further rescaling.
-    Use this for encoders (e.g. ResNetObsEncoder) that apply their own
-    ImageNet normalization internally, so images should arrive in [0, 1] range.
+    Converts uint8 images [0, 255] to float [0, 255] without any rescaling.
+
+    Use this when the observation encoder handles all image preprocessing
+    (channel ordering, normalization) internally (i.e. R3MObsEncoder). The dataset 
+    returns raw uint8 HWC images; this normalizer simply casts to float32 and
+    preserves the [0, 255] range so the encoder can apply its own pipeline.
     """
-    scale = np.array([1.0 / 255.0], dtype=np.float32)
+    scale = np.array([1.0], dtype=np.float32)
     offset = np.array([0.0], dtype=np.float32)
     stat = {
         "min": np.array([0.0], dtype=np.float32),

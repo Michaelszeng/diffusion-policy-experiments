@@ -14,14 +14,13 @@ and the same augmentation pipeline:
   Wrist camera (color_image1): ColorJitter + GaussianBlur + Resize(224,224)
 At eval, both cameras are center-cropped / resized to (224,224) without augmentation.
 
-Expected image format: float32 HWC (B*T, H, W, C) in [0, 1] range.
-Use `normalize_images: false` in the dataset config so the dataset applies the
-`get_image_to_float_normalizer` (maps uint8 [0,255] → float [0,1]) rather than
-the default `get_image_range_normalizer` (maps [0,1] → [-1,1]).
+Expected image format: float32 HWC (B*T, H, W, C) in [0, 255] range (output of
+`get_image_passthrough_normalizer`). Each encoder converts to the range required
+by its backbone internally.
 
-Note on R3M input range: R3M's forward() internally divides by 255 and applies its own
-normalization, so it expects CHW input in [0, 255]. R3MObsEncoder scales [0,1] → [0,255]
-before calling the R3M backbone.
+Note on R3M: R3M's forward() internally divides by 255 and applies its own
+normalization, expecting CHW input in [0, 255]. R3MObsEncoder divides to [0,1]
+for the camera transforms, then scales back to [0, 255] before calling the R3M backbone.
 """
 
 from typing import Dict, List, Optional, Tuple
@@ -162,15 +161,15 @@ class ResNetObsEncoder(nn.Module):
         Encode a single camera's images.
 
         Args:
-            x:   (B*T, H, W, C) float32 in [0, 1]  — HWC, output of the
-                 get_image_to_float_normalizer pipeline.
+            x:   (B*T, H, W, C) float32 in [0, 255] — HWC, output of the
+                 get_image_passthrough_normalizer pipeline.
             key: camera key name (determines which transform to apply)
 
         Returns:
             (B*T, projection_dim) float32
         """
-        # HWC → CHW
-        x = x.permute(0, 3, 1, 2).contiguous()  # (B*T, C, H, W)
+        # HWC → CHW, scale to [0, 1] for torchvision transforms and ImageNet norm
+        x = x.permute(0, 3, 1, 2).contiguous() / 255.0  # (B*T, C, H, W)
 
         # Camera-specific spatial transform + augmentation
         is_front = key == self.front_camera_key
@@ -313,14 +312,14 @@ class R3MObsEncoder(nn.Module):
     def _encode_image(self, x: torch.Tensor, key: str) -> torch.Tensor:
         """
         Args:
-            x:   (B*T, H, W, C) float32 in [0, 1]
+            x:   (B*T, H, W, C) float32 in [0, 255]
             key: camera key name
 
         Returns:
             (B*T, projection_dim) float32
         """
-        # HWC → CHW
-        x = x.permute(0, 3, 1, 2).contiguous()  # (B*T, C, H, W)
+        # HWC → CHW, scale to [0, 1] for torchvision transforms
+        x = x.permute(0, 3, 1, 2).contiguous() / 255.0  # (B*T, C, H, W)
 
         # Camera-specific augmentation (operates on CHW float [0, 1])
         is_front = key == self.front_camera_key
@@ -329,7 +328,7 @@ class R3MObsEncoder(nn.Module):
         else:
             x = self.front_eval_transform(x) if is_front else self.wrist_eval_transform(x)
 
-        # R3M expects CHW in [0, 255]; our pipeline produces [0, 1]
+        # R3M expects CHW in [0, 255]; scale back from [0, 1]
         x = x * 255.0
 
         # R3M forward: divides by 255, applies ImageNet normalization, runs ResNet18 → (B*T, 512)

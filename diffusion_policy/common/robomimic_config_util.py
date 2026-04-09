@@ -187,6 +187,8 @@ class RobomimicObsEncoder(nn.Module):
             else:
                 raise RuntimeError(f"Unsupported obs type: {typee}")
 
+        self.rgb_keys: List[str] = obs_config["rgb"]
+
         self._encoder = get_robomimic_obs_encoder(
             obs_config=obs_config,
             obs_key_shapes=obs_key_shapes,
@@ -200,4 +202,15 @@ class RobomimicObsEncoder(nn.Module):
         return self._encoder.output_shape()
 
     def forward(self, obs_dict: dict) -> torch.Tensor:
-        return self._encoder(obs_dict)
+        """
+        Preprocess image observations from float HWC [0, 255] (passthrough normalizer
+        output) to float CHW [-1, 1] as expected by the robomimic encoder, then encode.
+        """
+        processed = {}
+        for key, val in obs_dict.items():
+            if key in self.rgb_keys:
+                # HWC [0,255] → CHW [-1,1]
+                processed[key] = val.permute(0, 3, 1, 2).contiguous() / 127.5 - 1.0
+            else:
+                processed[key] = val
+        return self._encoder(processed)

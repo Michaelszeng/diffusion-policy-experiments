@@ -108,7 +108,6 @@ task:
     pad_after: ${eval:${policy.horizon} - 1}
     pad_before: ${eval:${task.dataset.n_obs_steps} - 1}
     seed: ${seed}
-    normalize_images: false  # Use get_image_to_float_normalizer (uint8→[0,1]); ResNetObsEncoder applies ImageNet norm internally
     zarr_configs:
     - path: ../benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/scripted/low/success_v1_translated.zarr
       max_train_episodes: null
