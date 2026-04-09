@@ -369,7 +369,8 @@ class BaseImageDataset(torch.utils.data.Dataset):
         # Create the final normalizer based on the global min/max in input_states
         normalizer = LinearNormalizer()
         normalizer.fit_from_input_stats(input_stats_dict=input_stats)
-        # All image keys use a passthrough normalizer: uint8 [0,255] → float [0,255].
+
+        # Override all image keys with a passthrough normalizer: uint8 [0,255] → float [0,255].
         # Each observation encoder is responsible for its own channel ordering,
         # scaling, and backend-specific normalization.
         for key in self.rgb_keys:
