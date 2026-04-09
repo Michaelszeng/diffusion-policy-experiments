@@ -23,6 +23,25 @@ def get_range_normalizer_from_stat(stat, output_max=1, output_min=-1, range_eps=
     )
 
 
+def get_image_to_float_normalizer():
+    """
+    Maps uint8 images [0, 255] to float [0, 1] with no further rescaling.
+    Use this for encoders (e.g. ResNetObsEncoder) that apply their own
+    ImageNet normalization internally, so images should arrive in [0, 1] range.
+    """
+    scale = np.array([1.0 / 255.0], dtype=np.float32)
+    offset = np.array([0.0], dtype=np.float32)
+    stat = {
+        "min": np.array([0.0], dtype=np.float32),
+        "max": np.array([255.0], dtype=np.float32),
+        "mean": np.array([127.5], dtype=np.float32),
+        "std": np.array([73.5], dtype=np.float32),
+    }
+    return SingleFieldLinearNormalizer.create_manual(
+        scale=scale, offset=offset, input_stats_dict=stat
+    )
+
+
 def get_image_range_normalizer():
     scale = np.array([2], dtype=np.float32)
     offset = np.array([-1], dtype=np.float32)

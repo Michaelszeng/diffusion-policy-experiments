@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -8,7 +8,6 @@ from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 from einops import reduce
 
 from diffusion_policy.common.pytorch_util import dict_apply
-from diffusion_policy.common.robomimic_config_util import get_robomimic_obs_encoder
 from diffusion_policy.model.common.normalizer import LinearNormalizer
 from diffusion_policy.model.diffusion.conditional_unet1d import ConditionalUnet1D
 from diffusion_policy.policy.base_image_policy import BaseImagePolicy
@@ -30,24 +29,24 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         one_hot_encoding_dim: int = 0,  # Dimension of 1-hot encoding (used for i.e. task specification)
         use_target_cond: bool = False,
         target_dim: int = None,
-        crop_shape: tuple = (76, 76),  # NOTE: crop size is handled here, in the policy class, since there is no explicit observation encoder class.
         diffusion_step_embed_dim: int = 256,  # Size of the diffusion timestep embedding
         down_dims: tuple = (256, 512, 1024),
         kernel_size: int = 5,  # Resnet param
         n_groups: int = 8,  # Resnet param
         num_DDPM_inference_steps: int = 100,
         num_DDIM_inference_steps: int = 10,
-        pretrained_encoder: bool = False,  # Use Robomimic-pretrained encoder
-        self_trained_obs_encoder: str = None,  # Path to a checkpoint file containing the weights for the self-trained obs encoder
-        freeze_encoder: bool = False,  # Freeze the encoder parameters
-        inference_loading: bool = False,  # Flag to set during inference to skip loading the self-trained obs encoder weights (use the actual checkpoint weights instead)
+        obs_encoder: nn.Module = None,  # Required: Hydra-instantiated encoder (e.g. RobomimicObsEncoder, ResNetObsEncoder)
+        self_trained_obs_encoder: str = None,  # Path to a checkpoint file to load obs encoder weights from
+        freeze_self_trained_obs_encoder: bool = False,  # Freeze encoder after loading self_trained_obs_encoder weights
+        inference_loading: bool = False,  # Skip self_trained_obs_encoder loading during inference (use final checkpoint weights)
         past_action_visible: bool = False,
         # DEPRECATED PARAMETERS FOR BACKWARD COMPATIBILITY
         cond_predict_scale = None,
         obs_encoder_group_norm = None,
         eval_fixed_crop = None,
         freeze_pretrained_encoder = None,
-        freeze_self_trained_obs_encoder = None,
+        pretrained_encoder = None,
+        crop_shape = None,
         # parameters passed to step
         **kwargs,
     ):
@@ -59,10 +58,6 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         """
         super().__init__()
 
-        # BACKWARD COMPATIBILITY
-        if freeze_self_trained_obs_encoder is not None:
-            freeze_encoder = freeze_self_trained_obs_encoder
-
         if use_target_cond:
             assert target_dim is not None
         assert one_hot_encoding_dim >= 0
@@ -71,33 +66,13 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         action_shape = shape_meta["action"]["shape"]
         assert len(action_shape) == 1
         action_dim = action_shape[0]
-        obs_shape_meta = shape_meta["obs"]
-        # each list contains the keys of the corresponding modality
-        # ex. {low_dim: [agent_pos], rgb: [image], depth: [], scan: []}
-        obs_config = {"low_dim": [], "rgb": [], "depth": [], "scan": []}
-        obs_key_shapes = dict()
-        # ex. {agent_pos: shape, image: shape}
-        for key, attr in obs_shape_meta.items():
-            shape = attr["shape"]
-            obs_key_shapes[key] = list(shape)
 
-            typee = attr.get("type", "low_dim")
-            if typee == "rgb":
-                obs_config["rgb"].append(key)
-            elif typee == "low_dim":
-                obs_config["low_dim"].append(key)
-            else:
-                raise RuntimeError(f"Unsupported obs type: {type}")
-
-        # Get observation encoder from Robomimic
-        obs_encoder = get_robomimic_obs_encoder(
-            obs_config=obs_config,
-            obs_key_shapes=obs_key_shapes,
-            action_dim=action_dim,
-            pretrained_encoder=pretrained_encoder,
-            freeze_encoder=freeze_encoder,
-            crop_shape=crop_shape,
-        )
+        if obs_encoder is None:
+            raise ValueError(
+                "obs_encoder must be provided. Specify it in the policy config using "
+                "_target_: diffusion_policy.common.robomimic_config_util.RobomimicObsEncoder "
+                "(or another encoder class)."
+            )
 
         obs_feature_dim = obs_encoder.output_shape()[0]
         global_cond_dim = obs_feature_dim * n_obs_steps + one_hot_encoding_dim
@@ -114,10 +89,11 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
             n_groups=n_groups,
         )
 
-        # Only load obs encoder weights from self-trained checkpoint during training. During inference, we want to use
-        # the weights from the final checkpoint (rather than override w/ the self-trained weights).
-        if not inference_loading:
-            self._maybe_load_and_freeze_obs_encoder(obs_encoder, self_trained_obs_encoder, freeze_encoder)
+        # Only load obs encoder weights from self-trained checkpoint during training (robomimic path only).
+        # External encoders (obs_encoder != None) handle their own weight loading / freezing.
+        # During inference we skip this entirely so the final checkpoint weights are used.
+        if not inference_loading and self_trained_obs_encoder is not None:
+            self._load_and_freeze_obs_encoder(obs_encoder, self_trained_obs_encoder, freeze_self_trained_obs_encoder)
 
         # Create a DDIM sampler that mirrors the DDPM β-schedule
         DDIM_noise_scheduler = DDIMScheduler(
@@ -153,16 +129,13 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         print("Diffusion params: %e" % sum(p.numel() for p in self.model.parameters()))
         print("Observation Encoder params: %e" % sum(p.numel() for p in self.obs_encoder.parameters()))
 
-    def _maybe_load_and_freeze_obs_encoder(self, obs_encoder, checkpoint_path, freeze):
+    def _load_and_freeze_obs_encoder(self, obs_encoder, checkpoint_path, freeze):
         """
-        Optionally initializes the obs encoder from a prior training run and/or freezes it.
+        Initializes the obs encoder from a prior training run and optionally freezes it.
 
         The checkpoint is expected to be a full model checkpoint saved by the training workspace,
         where obs encoder weights are stored under the "module.obs_encoder.*" prefix.
         """
-        if checkpoint_path is None:
-            return
-
         # Load the full model checkpoint and extract only the obs_encoder sub-dict
         print(f"Loading obs encoder from {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location="cpu")

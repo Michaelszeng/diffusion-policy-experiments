@@ -1,3 +1,5 @@
+from typing import List, Optional, Tuple
+
 import robomimic.scripts.generate_paper_configs as gpc
 from robomimic.config import config_factory
 from robomimic.scripts.generate_paper_configs import (
@@ -142,3 +144,60 @@ def get_robomimic_obs_encoder(
         ),
     )
     return obs_encoder
+
+
+class RobomimicObsEncoder(nn.Module):
+    """
+    Hydra-instantiable wrapper around get_robomimic_obs_encoder().
+
+    Accepts shape_meta directly so the encoder can be specified as a top-level
+    obs_encoder block in the policy config rather than being built implicitly
+    inside the policy __init__.
+
+    Args:
+        shape_meta:        Hydra shape_meta dict (action + obs keys).
+        pretrained_encoder: Load ImageNet-pretrained backbone weights.
+        freeze_encoder:    Freeze backbone weights (only active when
+                           pretrained_encoder=True).
+        crop_shape:        (H, W) for the CropRandomizer; None disables cropping.
+    """
+
+    def __init__(
+        self,
+        shape_meta: dict,
+        pretrained_encoder: bool = False,
+        freeze_encoder: bool = False,
+        crop_shape: Optional[Tuple[int, int]] = None,
+    ):
+        super().__init__()
+
+        obs_shape_meta = shape_meta["obs"]
+        action_dim = shape_meta["action"]["shape"][0]
+
+        obs_config = {"low_dim": [], "rgb": [], "depth": [], "scan": []}
+        obs_key_shapes: dict = {}
+        for key, attr in obs_shape_meta.items():
+            shape = attr["shape"]
+            obs_key_shapes[key] = list(shape)
+            typee = attr.get("type", "low_dim")
+            if typee == "rgb":
+                obs_config["rgb"].append(key)
+            elif typee == "low_dim":
+                obs_config["low_dim"].append(key)
+            else:
+                raise RuntimeError(f"Unsupported obs type: {typee}")
+
+        self._encoder = get_robomimic_obs_encoder(
+            obs_config=obs_config,
+            obs_key_shapes=obs_key_shapes,
+            action_dim=action_dim,
+            pretrained_encoder=pretrained_encoder,
+            freeze_encoder=freeze_encoder,
+            crop_shape=crop_shape,
+        )
+
+    def output_shape(self) -> Tuple[int, ...]:
+        return self._encoder.output_shape()
+
+    def forward(self, obs_dict: dict) -> torch.Tensor:
+        return self._encoder(obs_dict)

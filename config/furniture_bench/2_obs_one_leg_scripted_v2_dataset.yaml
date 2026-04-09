@@ -65,9 +65,6 @@ shape_meta:
       type: low_dim
 policy:  # Parameters to be passed to policy (i.e. the _target_ policy class below)
   _target_: diffusion_policy.policy.diffusion_unet_hybrid_image_targeted_policy.DiffusionUnetHybridImageTargetedPolicy
-  crop_shape:
-  - 212
-  - 212
   diffusion_step_embed_dim: 128
   down_dims:
   - 256
@@ -93,7 +90,14 @@ policy:  # Parameters to be passed to policy (i.e. the _target_ policy class bel
   use_target_cond: false
   target_dim: null
   shape_meta: ${shape_meta}
-  pretrained_encoder: false
+  obs_encoder:
+    _target_: diffusion_policy.common.robomimic_config_util.RobomimicObsEncoder
+    shape_meta: ${shape_meta}
+    pretrained_encoder: false
+    freeze_encoder: false
+    crop_shape:
+    - 224
+    - 224
   inference_loading: false
 task:
   dataset:
