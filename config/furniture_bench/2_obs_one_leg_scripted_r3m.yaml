@@ -108,15 +108,7 @@ task:
     seed: ${seed}
     normalize_images: false  # uint8→[0,1]; R3MObsEncoder scales back to [0,255] internally
     zarr_configs:
-    - path: ../benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/scripted/low/success_v1_translated.zarr
-      max_train_episodes: null
-      sampling_weight: null
-      val_ratio: 0.0625
-    - path: ../benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/scripted/low/success_v2_translated.zarr
-      max_train_episodes: null
-      sampling_weight: null
-      val_ratio: 0.0625
-    - path: ../benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/scripted/low/success_v3_translated.zarr
+    - path: ../benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/scripted/low/success_translated.zarr
       max_train_episodes: null
       sampling_weight: null
       val_ratio: 0.0625

@@ -11,6 +11,7 @@ from diffusion_policy.common.normalize_util import get_image_range_normalizer
 from diffusion_policy.common.replay_buffer import ReplayBuffer
 from diffusion_policy.common.sampler import ImprovedDatasetSampler, downsample_mask, get_val_mask
 from diffusion_policy.model.common.normalizer import LinearNormalizer
+from diffusion_policy.common.normalize_util import get_image_to_float_normalizer
 
 
 def gaussian_kernel(kernel_size=9, sigma=3, channels=3):
@@ -371,7 +372,6 @@ class BaseImageDataset(torch.utils.data.Dataset):
         # Create a normalizer for the RGB keys.
         # When normalize_images=False (e.g. for ResNetObsEncoder which normalizes
         # internally), use a simple /255 normalizer to get [0, 1] float instead.
-        from diffusion_policy.common.normalize_util import get_image_to_float_normalizer
         use_range_norm = getattr(self, "normalize_images", True)
         for key in self.rgb_keys:
             normalizer[key] = get_image_range_normalizer() if use_range_norm else get_image_to_float_normalizer()

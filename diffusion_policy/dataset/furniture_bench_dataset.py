@@ -42,6 +42,7 @@ class FurnitureBenchDataset(BaseZarrImageDataset):
         seed: int = 42,
         val_ratio: float = 0.0,
         color_jitter: Optional[Dict] = None,
+        normalize_images: bool = True,
     ):
         super().__init__(
             zarr_configs=zarr_configs,
@@ -53,6 +54,7 @@ class FurnitureBenchDataset(BaseZarrImageDataset):
             seed=seed,
             val_ratio=val_ratio,
             color_jitter=color_jitter,
+            normalize_images=normalize_images,
         )
 
     def _get_buffer_keys(self) -> List[str]:
