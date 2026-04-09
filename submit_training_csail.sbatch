@@ -90,8 +90,8 @@ export HYDRA_FULL_ERROR=1
 # --- Furniture Bench ---
 EXPERIMENT_CLASS=furniture_bench
 # EXPERIMENT_NAME=2_obs_one_leg_teleop  # batch size 64, LR 1e-4
-# EXPERIMENT_NAME=2_obs_one_leg_scripted  # batch size 64, LR 1e-4
-EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m  # batch size 64, LR 1e-4
+EXPERIMENT_NAME=2_obs_one_leg_scripted  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_v2_dataset  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_no_pressure  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_screw_z_pressure  # batch size 64, LR 1e-4
