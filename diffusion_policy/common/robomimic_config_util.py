@@ -106,8 +106,12 @@ def get_robomimic_obs_encoder(
         else:
             # set random crop parameter
             ch, cw = crop_shape
+            # Find the CHW input_shape from the first RGB key (obs_key_shapes is already CHW)
+            rgb_shapes = [v for v in obs_key_shapes.values() if len(v) == 3]
             for key, modality in config.observation.encoder.items():
                 if modality.obs_randomizer_class == "CropRandomizer":
+                    if rgb_shapes:
+                        modality.obs_randomizer_kwargs.input_shape = list(rgb_shapes[0])
                     modality.obs_randomizer_kwargs.crop_height = ch
                     modality.obs_randomizer_kwargs.crop_width = cw
 
@@ -178,11 +182,15 @@ class RobomimicObsEncoder(nn.Module):
         obs_key_shapes: dict = {}
         for key, attr in obs_shape_meta.items():
             shape = attr["shape"]
-            obs_key_shapes[key] = list(shape)
             typee = attr.get("type", "low_dim")
             if typee == "rgb":
+                # Robomimic expects obs_key_shapes in CHW format (C, H, W).
+                # shape_meta stores images in HWC format (H, W, C), so convert.
+                h, w, c = shape
+                obs_key_shapes[key] = [c, h, w]
                 obs_config["rgb"].append(key)
             elif typee == "low_dim":
+                obs_key_shapes[key] = list(shape)
                 obs_config["low_dim"].append(key)
             else:
                 raise RuntimeError(f"Unsupported obs type: {typee}")

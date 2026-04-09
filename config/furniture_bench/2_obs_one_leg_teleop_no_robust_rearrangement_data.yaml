@@ -49,15 +49,15 @@ shape_meta:
   obs:
     color_image1:
       shape:
+      - 240
+      - 320
       - 3
-      - 224
-      - 224
       type: rgb
     color_image2:
       shape:
+      - 240
+      - 320
       - 3
-      - 224
-      - 224
       type: rgb
     robot_state:
       shape:

@@ -241,9 +241,10 @@ class ManiskillDataset(BaseImageDataset):
         # Map RGB keys to camera names
         # Assume rgb_key format like "base_camera" maps to sensor_data["base_camera"]["rgb"]
         for rgb_key in self.rgb_keys:
-            # Extract RGB images: (T+1, C, H, W) -> (T, C, H, W)
+            # Extract RGB images: (T+1, C, H, W) -> (T, H, W, C)
             # NOTE: Maniskill dataset has 1 more observation than action, so we are just truncating the last observation
             rgb_images = sensor_data[rgb_key]["rgb"][:episode_length]
+            rgb_images = np.transpose(rgb_images, (0, 2, 3, 1))  # CHW -> HWC
             episode_data[rgb_key] = rgb_images.astype(np.uint8)
 
     def get_validation_dataset(self, index=None):
