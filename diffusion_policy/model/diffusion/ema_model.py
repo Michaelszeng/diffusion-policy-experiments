@@ -57,25 +57,16 @@ class EMAModel:
     def step(self, new_model):
         self.decay = self.get_decay(self.optimization_step)
 
-        # old_all_dataptrs = set()
-        # for param in new_model.parameters():
-        #     data_ptr = param.data_ptr()
-        #     if data_ptr != 0:
-        #         old_all_dataptrs.add(data_ptr)
-
-        all_dataptrs = set()
-        for module, ema_module in zip(new_model.modules(), self.averaged_model.modules()):            
+        for module, ema_module in zip(new_model.modules(), self.averaged_model.modules()):
             for param, ema_param in zip(module.parameters(recurse=False), ema_module.parameters(recurse=False)):
                 # iterative over immediate parameters only.
                 if isinstance(param, dict):
                     raise RuntimeError('Dict parameter not supported')
-                
-                # data_ptr = param.data_ptr()
-                # if data_ptr != 0:
-                #     all_dataptrs.add(data_ptr)
 
                 if isinstance(module, _BatchNorm):
-                    # skip batchnorms
+                    # Direct-copy BatchNorm affine params (gamma/beta) instead of
+                    # EMA-blending them: they must stay consistent with running_mean /
+                    # running_var, which are hard-copied as buffers below.
                     ema_param.copy_(param.to(dtype=ema_param.dtype).data)
                 elif not param.requires_grad:
                     ema_param.copy_(param.to(dtype=ema_param.dtype).data)
@@ -83,6 +74,12 @@ class EMAModel:
                     ema_param.mul_(self.decay)
                     ema_param.add_(param.data.to(dtype=ema_param.dtype), alpha=1 - self.decay)
 
+            # Synchronize buffers (e.g. BatchNorm running_mean / running_var).
+            # parameters() above only covers trainable weights; running statistics
+            # are stored as buffers and must be kept in sync separately so that
+            # the EMA model uses the correct normalization statistics in eval mode.
+            for buf, ema_buf in zip(module.buffers(recurse=False), ema_module.buffers(recurse=False)):
+                ema_buf.copy_(buf.to(dtype=ema_buf.dtype).data)
+
         # verify that iterating over module and then parameters is identical to parameters recursively.
-        # assert old_all_dataptrs == all_dataptrs
         self.optimization_step += 1

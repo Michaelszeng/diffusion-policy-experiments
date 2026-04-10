@@ -246,7 +246,8 @@ class R3MObsEncoder(nn.Module):
         freeze_encoder:   Freeze R3M backbone weights (default False — fine-tune).
         projection_dim:   Projection output size per camera (default 128).
         front_camera_key: Key of the front-facing camera. Defaults to the last sorted
-                          RGB key ("color_image2" for FurnitureBench).
+                          RGB key ("color_image2" for FurnitureBench). We apply different augmentation
+                          for front vs wrist camera. NOTE: currently assumes just one front camera.
     """
 
     R3M_OUT_DIM = 512  # R3M ResNet18 output dim
