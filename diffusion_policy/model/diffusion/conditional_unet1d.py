@@ -264,7 +264,7 @@ class ConditionalUnet1D(nn.Module):
         if global_cond is not None:
             global_feature = torch.cat([global_feature, global_cond], axis=-1)
 
-        # Concateante target conditioning (ex. target goal state)
+        # Concatenate target conditioning (ex. target goal state)
         if target_cond is not None:
             global_feature = torch.cat([global_feature, target_cond], axis=-1)
 
