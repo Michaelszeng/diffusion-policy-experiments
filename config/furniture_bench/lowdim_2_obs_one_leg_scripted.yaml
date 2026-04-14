@@ -53,7 +53,7 @@ shape_meta:
       type: low_dim
     parts_poses:
       shape:
-      - 35
+      - 45  # 5 parts × 9 (xyz + 6D rotation); zarr stores quat which is converted on load
       type: low_dim
 policy:
   _target_: diffusion_policy.policy.diffusion_unet_lowdim_policy.DiffusionUnetLowdimPolicy

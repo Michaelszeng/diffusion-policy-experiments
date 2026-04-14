@@ -2,7 +2,6 @@
 
 # Source directory on your computer
 SOURCE_DIR="data/outputs/furniture_bench/"
-# SOURCE_DIR="data/outputs/"
 
 # Target directory on the target computer
 # TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/furniture_bench/2_obs_one_leg_scripted"
@@ -17,6 +16,9 @@ TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/
 # TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/furniture_bench/2_obs_one_leg_teleop_CLIP_attention"
 # TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/furniture_bench"
 # TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/furniture_bench/2_obs_one_leg_teleop_no_robust_rearrangement_data"
+
+# SOURCE_DIR="/home/michzeng/benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/scripted/low/"
+# TARGET_DIR="/data/locomotion/michzeng/benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/scripted/low/success_translated.zarr"
 
 ####################################################################################
 
