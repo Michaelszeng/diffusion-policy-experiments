@@ -65,6 +65,28 @@ class FurnitureBenchLowdimDataset(BaseZarrLowdimDataset):
         # identity map — zarr key names match the model key names
         return {"action": "action", **{k: k for k in self.lowdim_keys}}
 
+    def get_normalizer(self, mode: str = "limits", **kwargs):
+        """
+        Do not apply any normalization on the quaternion components of the parts poses,
+        which are the last 4 elements of each 7D pose. `parts_poses` is a concatenation
+        of all 7D poses for all parts.
+        """
+        normalizer = super().get_normalizer(mode=mode, **kwargs)
+        
+        assert "parts_poses" in normalizer.params_dict, "parts_poses not found in normalizer for state-based policy"
+        params = normalizer.params_dict["parts_poses"]
+        scale = params["scale"].data
+        offset = params["offset"].data
+        
+        dim = scale.shape[0]
+        if dim % 7 == 0:
+            num_parts = dim // 7
+            for i in range(num_parts):
+                scale[i*7 + 3 : i*7 + 7] = 1.0
+                offset[i*7 + 3 : i*7 + 7] = 0.0
+                    
+        return normalizer
+
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         if self.num_datasets == 1:
             data = self.samplers[0].sample_data(idx)
