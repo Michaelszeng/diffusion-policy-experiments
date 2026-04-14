@@ -113,9 +113,9 @@ task:
     seed: ${seed}
     zarr_configs:
     - path: ../benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/scripted_screw_z_pressure/low/success_translated.zarr
-      max_train_episodes: null
+      max_train_episodes: 190
       sampling_weight: null
-      val_ratio: 0.0625
+      val_ratio: 0.05
   name: furniture_bench
   shape_meta: ${shape_meta} # not used?
 task_name: furniture_bench
@@ -133,7 +133,7 @@ training:
   lr_warmup_steps: 500
   max_train_steps: null  # per epoch training steps
   max_val_steps: null
-  total_train_steps: 600000
+  total_train_steps: 250000
   num_epochs: null # 70 for 50, 2000; 200 for 50, 500
   resume: false
   rollout_every: 5  # UNUSED -- no environment rollouts during training
