@@ -5,7 +5,7 @@ checkpoint:
   save_last_snapshot: false
   topk:  # Save top k checkpoints
     format_str: epoch={epoch:03d}-val_loss={val_loss:.4f}-val_ddim_mse={val_ddim_mse:.6f}.ckpt
-    k: 7
+    k: 5
     mode: min
     monitor_key: val_ddim_mse_0
 dataloader:
@@ -139,7 +139,7 @@ training:
   lr_warmup_steps: 500
   max_train_steps: null  # per epoch training steps
   max_val_steps: null
-  total_train_steps: 250000
+  total_train_steps: 200000
   num_epochs: null # 70 for 50, 2000; 200 for 50, 500
   resume: false
   rollout_every: 5  # UNUSED -- no environment rollouts during training

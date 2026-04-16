@@ -5,7 +5,7 @@ checkpoint:
   save_last_snapshot: false
   topk:
     format_str: epoch={epoch:03d}-val_loss={val_loss:.4f}-val_ddim_mse={val_ddim_mse:.6f}.ckpt
-    k: 7
+    k: 5
     mode: min
     monitor_key: val_ddim_mse_0
 dataloader:
@@ -129,7 +129,7 @@ training:
   encoder_lr_scale: 1.0  # Fine-tune encoder and UNet at same LR
   max_train_steps: null
   max_val_steps: null
-  total_train_steps: 250000
+  total_train_steps: 200000
   num_epochs: null
   resume: false
   rollout_every: 5
