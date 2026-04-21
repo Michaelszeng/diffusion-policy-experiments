@@ -9,16 +9,16 @@ checkpoint:
     mode: min
     monitor_key: val_ddim_mse_0
 dataloader:
-  batch_size: 48
+  batch_size: 256
   num_workers: 8
-  persistent_workers: true
+  persistent_workers: True
   pin_memory: true
   shuffle: true
   prefetch_factor: 1
 val_dataloader:
-  batch_size: 48
+  batch_size: 256
   num_workers: 8
-  persistent_workers: true
+  persistent_workers: True
   pin_memory: true
   drop_last: true  # Drop the last batch if it's not full
   shuffle: true
@@ -34,10 +34,10 @@ exp_name: defaults
 logging:  # wandb logging configuration
   group: null
   id: null
-  name: furniture_bench_2_obs_one_leg_teleop
+  name: furniture_bench_2_obs_one_leg_teleop_r3m_only_imitation_juicer_data
   project: furniture_bench_one_leg
 multi_run:
-  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_hybrid_furniture_bench_2_obs_one_leg_teleop
+  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_hybrid_furniture_bench_2_obs_one_leg_teleop_r3m_only_imitation_juicer_data
   run_dir: data/outputs/${multi_run.wandb_name_base}
 horizon: ${eval:${n_obs_steps} + 14}
 n_action_steps: 8  # Inference-only parameter
@@ -90,15 +90,13 @@ policy:  # Parameters to be passed to policy (i.e. the _target_ policy class bel
   use_target_cond: false
   target_dim: null
   shape_meta: ${shape_meta}
-  obs_encoder:
-    _target_: diffusion_policy.common.robomimic_config_util.RobomimicObsEncoder
-    shape_meta: ${shape_meta}
-    pretrained_encoder: false
-    freeze_encoder: false
-    crop_shape:
-    - 224
-    - 224
   inference_loading: false
+  obs_encoder:
+    _target_: diffusion_policy.common.r3m_config_util.R3MObsEncoder
+    shape_meta: ${shape_meta}
+    freeze_encoder: false     # Fine-tune the R3M backbone
+    projection_dim: 128
+    front_camera_key: color_image2
 task:
   dataset:
     _target_: diffusion_policy.dataset.furniture_bench_dataset.FurnitureBenchDataset
@@ -116,16 +114,14 @@ task:
       max_train_episodes: null
       sampling_weight: null
       val_ratio: 0.05
-    - path: ../benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/teleop/low/success_translated.zarr
-      max_train_episodes: null
-      sampling_weight: null
-      val_ratio: 0.05
   name: furniture_bench
   shape_meta: ${shape_meta} # not used?
 task_name: furniture_bench
 training:
-  mixed_precision: null  # bf16 or null
+  mixed_precision: bf16
   gradient_clip_val: 1.0  # max gradient norm; critical for bf16 stability
+  use_torch_compile: false
+  torch_compile_mode: default
   checkpoint_path: null
   checkpoint_every: 5
   debug: false
@@ -133,6 +129,7 @@ training:
   gradient_accumulate_every: 1
   lr_scheduler: cosine
   lr_warmup_steps: 500
+  encoder_lr_scale: 1.0  # Fine-tune encoder and UNet at same LR
   max_train_steps: null  # per epoch training steps
   max_val_steps: null
   total_train_steps: 200000
