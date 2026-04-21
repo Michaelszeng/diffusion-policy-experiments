@@ -71,7 +71,7 @@ python prune_idle.py data/diffusion_experiments/planar_pushing/sim_sim_tee_data_
 
 ### Running locally:
 ```bash
-python train.py --config-dir=config/planar_pushing --config-name=2_obs.yaml hydra.run.dir=data/outputs/planar_pushing/2_obs/
+python train.py --config-dir=config/planar_pushing --config-name=2_obs.yaml hydra.run.dir=data/outputs/planar_pushing/2_obs/ dataloader.batch_size=4 val_dataloader.batch_size=4
 ```
 
 Add `training.resume=True` to resume an existing run

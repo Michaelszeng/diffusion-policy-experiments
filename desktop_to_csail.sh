@@ -9,8 +9,11 @@
 # SOURCE_DIR="           /home/michzeng/benchmark-furniturebench-juicer/dataset/processed/diffik/sim/one_leg/teleop/low/success_processed_translated.zarr"
 # TARGET_DIR="/data/locomotion/michzeng/benchmark-furniturebench-juicer/dataset/processed/diffik/sim/one_leg/teleop/low/"
 
-SOURCE_DIR="           /home/michzeng/benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/scripted/low/success_translated.zarr"
-TARGET_DIR="/data/locomotion/michzeng/benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/scripted/low/"
+# SOURCE_DIR="           /home/michzeng/benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/scripted/low/success_translated.zarr"
+# TARGET_DIR="/data/locomotion/michzeng/benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/scripted/low/"
+
+SOURCE_DIR="           /home/michzeng/benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/teleop/low/success_translated.zarr"
+TARGET_DIR="/data/locomotion/michzeng/benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/teleop/low/"
 
 ####################################################################################
 

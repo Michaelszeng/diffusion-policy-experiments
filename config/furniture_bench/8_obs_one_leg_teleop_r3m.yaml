@@ -5,22 +5,24 @@ checkpoint:
   save_last_snapshot: false
   topk:  # Save top k checkpoints
     format_str: epoch={epoch:03d}-val_loss={val_loss:.4f}-val_ddim_mse={val_ddim_mse:.6f}.ckpt
-    k: 7
+    k: 5
     mode: min
     monitor_key: val_ddim_mse_0
 dataloader:
   batch_size: 64
   num_workers: 8
-  persistent_workers: false
+  persistent_workers: true
   pin_memory: true
   shuffle: true
+  prefetch_factor: 1
 val_dataloader:
   batch_size: 64
   num_workers: 8
-  persistent_workers: false
+  persistent_workers: true
   pin_memory: true
   drop_last: true  # Drop the last batch if it's not full
   shuffle: true
+  prefetch_factor: 1
 ema:
   _target_: diffusion_policy.model.diffusion.ema_model.EMAModel
   inv_gamma: 1.0
@@ -32,37 +34,37 @@ exp_name: defaults
 logging:  # wandb logging configuration
   group: null
   id: null
-  name: 2_obs_6_25%_data
-  project: t_pushing
+  name: furniture_bench_8_obs_one_leg_teleop_r3m
+  project: furniture_bench_one_leg
 multi_run:
-  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_hybrid_pusher_6_25%_data
+  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_hybrid_furniture_bench_8_obs_one_leg_teleop_r3m
   run_dir: data/outputs/${multi_run.wandb_name_base}
-horizon: 16
+horizon: ${eval:${n_obs_steps} + 14}
 n_action_steps: 8  # Inference-only parameter
-n_obs_steps: 2  # Number of observation steps to condition on
+n_obs_steps: 8  # Number of observation steps to condition on
 shape_meta:
   action:
     shape:
-    - 2
+    - 10
   obs:
-    agent_pos:
+    color_image1:
       shape:
+      - 240
+      - 320
       - 3
+      type: rgb
+    color_image2:
+      shape:
+      - 240
+      - 320
+      - 3
+      type: rgb
+    robot_state:
+      shape:
+      - 16
       type: low_dim
-    overhead_camera:
-      shape:
-      - 3
-      - 128
-      - 128
-      type: rgb
-    wrist_camera:
-      shape:
-      - 3
-      - 128
-      - 128
-      type: rgb
 policy:  # Parameters to be passed to policy (i.e. the _target_ policy class below)
-  _target_: diffusion_policy.policy.diffusion_unet_hybrid_image_targeted_policy.DiffusionUnetHybridImageTargetedPolicy
+  _target_: diffusion_policy.policy.diffusion_unet_hybrid_image_attention_policy.DiffusionUnetHybridImageAttentionPolicy
   diffusion_step_embed_dim: 128
   down_dims:
   - 256
@@ -74,6 +76,11 @@ policy:  # Parameters to be passed to policy (i.e. the _target_ policy class bel
   n_action_steps: ${n_action_steps}
   n_obs_steps: ${n_obs_steps}
   past_action_visible: false  # explicitely condition on past actions
+  num_attention_heads: 8
+  attention_dropout: 0.1
+  use_temporal_pos_emb: true
+  use_modality_emb: true
+  use_range_emb: true
   DDPM_noise_scheduler:
     _target_: diffusers.schedulers.scheduling_ddpm.DDPMScheduler
     beta_end: 0.02
@@ -85,21 +92,17 @@ policy:  # Parameters to be passed to policy (i.e. the _target_ policy class bel
     variance_type: fixed_small
   num_DDPM_inference_steps: 100  # DDPM scheduler is used during training/validation
   num_DDIM_inference_steps: 10  # DDIM scheduler is used during inference
-  use_target_cond: true
-  target_dim: 3  # 3 dims for 2D pose of T
   shape_meta: ${shape_meta}
-  obs_encoder:
-    _target_: diffusion_policy.model.vision.robomimic_config_util.RobomimicObsEncoder
-    shape_meta: ${shape_meta}
-    pretrained_encoder: false
-    freeze_encoder: false
-    crop_shape:
-    - 112
-    - 112
   inference_loading: false
+  obs_encoder:
+    _target_: diffusion_policy.model.vision.r3m_config_util.R3MObsEncoder
+    shape_meta: ${shape_meta}
+    freeze_encoder: false     # Fine-tune the R3M backbone
+    projection_dim: 128
+    front_camera_key: color_image2
 task:
   dataset:
-    _target_: diffusion_policy.dataset.planar_pushing_dataset_improved_sampling.PlanarPushingDataset
+    _target_: diffusion_policy.dataset.furniture_bench_dataset.FurnitureBenchDataset
     shape_meta: ${shape_meta}
     horizon: ${horizon}
     n_obs_steps: ${n_obs_steps}
@@ -110,27 +113,34 @@ task:
     pad_before: ${eval:${task.dataset.n_obs_steps} - 1}
     seed: ${seed}
     zarr_configs:
-    - path: data/diffusion_experiments/planar_pushing/sim_sim_tee_data_carbon_large.zarr
-      max_train_episodes: 10
+    - path: ../benchmark-furniturebench-juicer/dataset/imitation-juicer-data-processed-001/processed/sim/one_leg/teleop/low/success_truncated_translated.zarr
+      max_train_episodes: null
       sampling_weight: null
-      val_ratio: 0.0625 # 10 / 160 trajectories
-  name: scene_image
+      val_ratio: 0.05
+    - path: ../benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/teleop/low/success_translated.zarr
+      max_train_episodes: null
+      sampling_weight: null
+      val_ratio: 0.05
+  name: furniture_bench
   shape_meta: ${shape_meta} # not used?
-task_name: planar_pushing
+task_name: furniture_bench
 training:
-  mixed_precision: null  # bf16 or null
-  checkpoint_path: null
+  mixed_precision: bf16
   gradient_clip_val: 1.0  # max gradient norm; critical for bf16 stability
+  use_torch_compile: false
+  torch_compile_mode: default
+  checkpoint_path: null
   checkpoint_every: 5
   debug: false
   device: cuda
   gradient_accumulate_every: 1
   lr_scheduler: cosine
   lr_warmup_steps: 500
+  encoder_lr_scale: 1.0  # Fine-tune encoder and UNet at same LR
   max_train_steps: null  # per epoch training steps
   max_val_steps: null
-  total_train_steps: 104600
-  num_epochs: null # 70 for 50, 2000; 200 for 50, 500
+  total_train_steps: 200000
+  num_epochs: null
   resume: false
   rollout_every: 5  # UNUSED -- no environment rollouts during training
   sample_every: ${training.checkpoint_every}  # validation using DDPM output

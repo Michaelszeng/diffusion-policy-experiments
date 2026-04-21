@@ -91,7 +91,7 @@ policy:  # Parameters to be passed to policy (i.e. the _target_ policy class bel
   self_trained_obs_encoder: "/home/gridsan/mzeng/diffusion-policy-experiments/data/outputs/planar_pushing/2_obs_idle_frames_pruned/checkpoints/epoch=110-val_loss=0.0449-val_ddim_mse=0.000351.ckpt"  # For long context, we use a (frozen) pretrained obs encoder from short context
   freeze_self_trained_obs_encoder: true
   obs_encoder:
-    _target_: diffusion_policy.common.robomimic_config_util.RobomimicObsEncoder
+    _target_: diffusion_policy.model.vision.robomimic_config_util.RobomimicObsEncoder
     shape_meta: ${shape_meta}
     pretrained_encoder: false
     freeze_encoder: false

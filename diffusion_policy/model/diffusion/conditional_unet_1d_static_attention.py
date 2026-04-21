@@ -2,7 +2,6 @@ import logging
 import math
 from typing import Optional, Union
 
-import einops
 import torch
 import torch.nn as nn
 
@@ -427,11 +426,17 @@ class StaticAttentionConditionalUnet1D(nn.Module):
 
     def _expand_timesteps(
         self,
-        timestep: Union[torch.Tensor, float, int],
+        timesteps: Union[torch.Tensor, float, int],
         batch_size: int,
         device: torch.device,
     ) -> torch.Tensor:
-        timesteps = timestep
+        """
+        Normalize the diffusion timestep into a (batch_size,) long tensor.
+
+        Accepts a scalar (Python int/float), a 0-d tensor, or an already-batched
+        1-d tensor, and returns a 1-d tensor of length batch_size on the correct
+        device — ready to be passed to the timestep embedding.
+        """
         if not torch.is_tensor(timesteps):
             timesteps = torch.tensor([timesteps], dtype=torch.long, device=device)
         elif timesteps.ndim == 0:
@@ -501,6 +506,7 @@ class StaticAttentionConditionalUnet1D(nn.Module):
         temporal_positions = torch.cat([timestep_zeros, obs_temporal_positions], dim=1)
         modality_indices = torch.cat([timestep_zeros, obs_modality_indices], dim=1)
         range_indices = torch.cat([timestep_zeros, obs_range_indices], dim=1)
+        # Mask that indicates which tokens are true observations (vs diffusion timestep)
         obs_token_mask = torch.cat(
             [
                 timestep_obs_mask,
@@ -532,7 +538,7 @@ class StaticAttentionConditionalUnet1D(nn.Module):
         Returns:
             (B, T, input_dim)
         """
-        sample = einops.rearrange(sample, "b h t -> b t h").contiguous()
+        sample = sample.permute(0, 2, 1).contiguous()  # "b h t -> b t h"
         batch_size = sample.shape[0]
 
         (
@@ -554,7 +560,7 @@ class StaticAttentionConditionalUnet1D(nn.Module):
 
         h_local = []
         if local_cond is not None and self.local_cond_encoder is not None:
-            local_cond = einops.rearrange(local_cond, "b h t -> b t h").contiguous()
+            local_cond = local_cond.permute(0, 2, 1).contiguous()  # "b h t -> b t h"
             resnet, resnet2 = self.local_cond_encoder
             x_local = resnet(
                 local_cond,
@@ -610,7 +616,10 @@ class StaticAttentionConditionalUnet1D(nn.Module):
             )
 
         for idx, (resnet, resnet2, upsample) in enumerate(self.up_modules):
-            x = torch.cat((x, h.pop()), dim=1)
+            h_pop = h.pop()
+            if x.shape[-1] != h_pop.shape[-1]:
+                x = x[..., :h_pop.shape[-1]]
+            x = torch.cat((x, h_pop), dim=1)
             x = resnet(
                 x,
                 cond_tokens,
@@ -632,5 +641,5 @@ class StaticAttentionConditionalUnet1D(nn.Module):
             x = upsample(x)
 
         x = self.final_conv(x)
-        x = einops.rearrange(x, "b t h -> b h t").contiguous()
+        x = x.permute(0, 2, 1).contiguous()  # "b t h -> b h t"
         return x

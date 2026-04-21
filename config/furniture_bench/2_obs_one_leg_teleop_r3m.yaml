@@ -9,14 +9,14 @@ checkpoint:
     mode: min
     monitor_key: val_ddim_mse_0
 dataloader:
-  batch_size: 256
+  batch_size: 64
   num_workers: 8
   persistent_workers: true
   pin_memory: true
   shuffle: true
   prefetch_factor: 1
 val_dataloader:
-  batch_size: 256
+  batch_size: 64
   num_workers: 8
   persistent_workers: true
   pin_memory: true
@@ -92,7 +92,7 @@ policy:  # Parameters to be passed to policy (i.e. the _target_ policy class bel
   shape_meta: ${shape_meta}
   inference_loading: false
   obs_encoder:
-    _target_: diffusion_policy.common.r3m_config_util.R3MObsEncoder
+    _target_: diffusion_policy.model.vision.r3m_config_util.R3MObsEncoder
     shape_meta: ${shape_meta}
     freeze_encoder: false     # Fine-tune the R3M backbone
     projection_dim: 128

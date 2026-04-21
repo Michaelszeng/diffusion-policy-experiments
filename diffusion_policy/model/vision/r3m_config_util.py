@@ -63,7 +63,8 @@ class ResNetObsEncoder(nn.Module):
 
     One ResNet18 per RGB camera key. Each camera's features are projected to
     `projection_dim` and concatenated with (already-normalized) low-dim
-    observations.
+    observations. Encoder weights are shared across timesteps (B*T frames are 
+    processed as a flat batch with no temporal state in the encoder).
 
     Args:
         shape_meta:        Hydra shape_meta dict (action + obs keys).
@@ -201,9 +202,10 @@ class ResNetObsEncoder(nn.Module):
         """
         features = []
         for key in self.rgb_keys:
-            features.append(self._encode_image(obs_dict[key].float(), key))
+            features.append(self._encode_image(obs_dict[key].float(), key))  # (B*T, projection_dim) each
         for key in self.lowdim_keys:
-            features.append(obs_dict[key].float())
+            features.append(obs_dict[key].float())  # (B*T, d) each, passed through unchanged
+        # cat → (B*T, num_cameras*projection_dim + lowdim_dim) == (B*T, obs_feature_dim)
         return torch.cat(features, dim=-1)
 
 
@@ -234,8 +236,8 @@ class R3MObsEncoder(nn.Module):
 
     Identical structure to ResNetObsEncoder but uses weights from the R3M objective
     (Nair et al., 2022) trained on Ego4D egocentric video rather than ImageNet.
-    Per the JUICER paper this achieves 77% average success on the one-leg task vs
-    59% for ImageNet pretraining.
+
+    One R3M backbone per camera; encoder weights are shared across timesteps (B*T flat batch).
 
     R3M's backbone handles its own normalization internally (divides by 255 and applies
     ImageNet stats). This encoder scales the [0,1] float images back to [0,255] before
@@ -348,7 +350,8 @@ class R3MObsEncoder(nn.Module):
         """
         features = []
         for key in self.rgb_keys:
-            features.append(self._encode_image(obs_dict[key].float(), key))
+            features.append(self._encode_image(obs_dict[key].float(), key))  # (B*T, projection_dim) each
         for key in self.lowdim_keys:
-            features.append(obs_dict[key].float())
+            features.append(obs_dict[key].float())  # (B*T, d) each, passed through unchanged
+        # cat → (B*T, num_cameras*projection_dim + lowdim_dim) = (B*T, obs_feature_dim)
         return torch.cat(features, dim=-1)
