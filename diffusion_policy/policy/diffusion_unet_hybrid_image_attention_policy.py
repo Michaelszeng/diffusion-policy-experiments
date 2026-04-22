@@ -374,6 +374,17 @@ class DiffusionUnetHybridImageAttentionPolicy(BaseImagePolicy):
         """Set normalizer's parameters based on dataset."""
         self.normalizer.load_state_dict(normalizer.state_dict())
 
+    def load_state_dict(self, state_dict, strict=True):
+        # Checkpoints saved with BatchNorm encoders contain running_mean / running_var /
+        # num_batches_tracked buffers that don't exist in GroupNorm. Drop them so that
+        # resuming from a pre-GroupNorm checkpoint doesn't raise "unexpected keys".
+        own_keys = set(self.state_dict().keys())
+        filtered = {k: v for k, v in state_dict.items() if k in own_keys}
+        missing = own_keys - filtered.keys()
+        if missing:
+            raise RuntimeError(f"Missing key(s) in state_dict: {missing}")
+        super().load_state_dict(filtered, strict=True)
+
     def noise_trajectory(self, trajectory):
         """Add random amount of noise to the clean trajectory."""
         noise = torch.randn(trajectory.shape, device=trajectory.device)
