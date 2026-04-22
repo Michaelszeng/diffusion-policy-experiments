@@ -70,7 +70,6 @@ class CrossAttentionConditioning(nn.Module):
             raise ValueError(f"embed_dim ({embed_dim}) must be divisible by num_heads ({num_heads})")
 
         self.cond_proj = nn.Linear(cond_token_dim, embed_dim)
-        self.embed_scale = math.sqrt(embed_dim)
         self.use_temporal_pos_emb = use_temporal_pos_emb
         self.use_modality_emb = use_modality_emb
         self.use_range_emb = use_range_emb
@@ -114,7 +113,6 @@ class CrossAttentionConditioning(nn.Module):
     ) -> torch.Tensor:
         # x: (B, T, C), cond_tokens: (B, N, D_cond)
         cond = self.cond_proj(cond_tokens)
-        cond = cond * self.embed_scale
 
         if self.use_modality_emb:
             if modality_indices is None:

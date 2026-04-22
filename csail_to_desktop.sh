@@ -17,8 +17,11 @@ TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/
 # TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/furniture_bench/2_obs_one_leg_scripted_r3m_dart_0_25_200_eps"
 # TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/furniture_bench/2_obs_one_leg_scripted_r3m_dart_0_5_200_eps"
 
-# TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/furniture_bench/2_obs_one_leg_teleop_no_robust_rearrangement_data"
 # TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/furniture_bench/2_obs_one_leg_teleop"
+# TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/furniture_bench/2_obs_one_leg_teleop_r3m"
+# TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/furniture_bench/4_obs_one_leg_teleop_r3m"
+TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/furniture_bench/8_obs_one_leg_teleop_r3m"
+# TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/furniture_bench/16_obs_one_leg_teleop_r3m"
 
 # SOURCE_DIR="/home/michzeng/benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/scripted/low/"
 # TARGET_DIR="/data/locomotion/michzeng/benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/scripted/low/success_translated.zarr"
