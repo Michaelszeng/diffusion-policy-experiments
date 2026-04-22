@@ -245,11 +245,13 @@ class R3MObsEncoder(nn.Module):
 
     Args:
         shape_meta:       Hydra shape_meta dict (action + obs keys).
-        freeze_encoder:   Freeze R3M backbone weights (default False — fine-tune).
+        freeze_encoder:   Freeze backbone and projector weights (default False).
+        use_groupnorm:    Replace BatchNorm2d in the R3M backbone with GroupNorm.
+                          GroupNorm is stable under bf16 and small batch sizes;
+                          recommended when fine-tuning the backbone end-to-end.
         projection_dim:   Projection output size per camera (default 128).
         front_camera_key: Key of the front-facing camera. Defaults to the last sorted
-                          RGB key ("color_image2" for FurnitureBench). We apply different augmentation
-                          for front vs wrist camera. NOTE: currently assumes just one front camera.
+                          RGB key ("color_image2" for FurnitureBench).
     """
 
     R3M_OUT_DIM = 512  # R3M ResNet18 output dim
@@ -258,6 +260,7 @@ class R3MObsEncoder(nn.Module):
         self,
         shape_meta: dict,
         freeze_encoder: bool = False,
+        use_groupnorm: bool = False,
         projection_dim: int = 128,
         front_camera_key: Optional[str] = None,
     ):
@@ -284,10 +287,28 @@ class R3MObsEncoder(nn.Module):
             {key: _build_r3m_resnet18(freeze_encoder) for key in self.rgb_keys}
         )
 
+        if use_groupnorm and not freeze_encoder:
+            # Replace BatchNorm with GroupNorm for bf16 stability. Only applied when
+            # the backbone is trainable; frozen BN layers have no gradient path anyway.
+            for encoder in self.encoders.values():
+                replace_submodules(
+                    root_module=encoder,
+                    predicate=lambda m: isinstance(m, nn.BatchNorm2d),
+                    func=lambda m: nn.GroupNorm(
+                        num_groups=m.num_features // 16,
+                        num_channels=m.num_features,
+                    ),
+                )
+
         # ── Per-camera projection layers ───────────────────────────────────────
         self.projectors = nn.ModuleDict(
             {key: nn.Linear(self.R3M_OUT_DIM, projection_dim) for key in self.rgb_keys}
         )
+
+        if freeze_encoder:
+            for proj in self.projectors.values():
+                for param in proj.parameters():
+                    param.requires_grad = False
 
         # ── Output dimension ───────────────────────────────────────────────────
         lowdim_dim = sum(obs_meta[k]["shape"][0] for k in self.lowdim_keys)
