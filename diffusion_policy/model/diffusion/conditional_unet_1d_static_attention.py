@@ -111,7 +111,7 @@ class CrossAttentionConditioning(nn.Module):
         range_indices: Optional[torch.Tensor] = None,
         obs_token_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        # x: (B, T, C), cond_tokens: (B, N, D_cond)
+        # x: (B, T, C), cond_tokens: (B, N, D_cond) — already in unified_token_dim space
         cond = self.cond_proj(cond_tokens)
 
         if self.use_modality_emb:
@@ -133,10 +133,11 @@ class CrossAttentionConditioning(nn.Module):
                 token_mask=obs_token_mask,
             )
 
+        cond_normed = self.cond_norm(cond)
         attn_out, _ = self.cross_attn(
             query=self.query_norm(x),
-            key=self.cond_norm(cond),
-            value=self.cond_norm(cond),
+            key=cond_normed,
+            value=cond_normed,
             need_weights=False,
         )
         x = x + attn_out
@@ -240,13 +241,23 @@ class StaticAttentionConditionalUnet1D(nn.Module):
         self.use_modality_emb = use_modality_emb
         self.use_range_emb = use_range_emb
 
+        # Unified token dimension: all conditioning tokens (obs + timestep) are projected
+        # to this dimension ONCE here in the UNet, then shared across every attention block.
+        # This means the raw encoder output passes through global_to_token exactly once,
+        # so backward gradients flow through one matrix rather than ~12 independent cond_proj
+        # matrices, preventing gradient amplification that drives the encoder toward NaN.
+        unified_token_dim = down_dims[0]
+        self.unified_token_dim = unified_token_dim
+
         self.diffusion_step_encoder = nn.Sequential(
             SinusoidalPosEmb(dim=diffusion_step_embed_dim),
             nn.Linear(diffusion_step_embed_dim, diffusion_step_embed_dim * 4),
             nn.Mish(),
             nn.Linear(diffusion_step_embed_dim * 4, diffusion_step_embed_dim),
         )
-        self.timestep_to_token = nn.Linear(diffusion_step_embed_dim, global_cond_dim)
+        # Both projections map into unified_token_dim so all tokens share one space
+        self.timestep_to_token = nn.Linear(diffusion_step_embed_dim, unified_token_dim)
+        self.global_to_token = nn.Linear(global_cond_dim, unified_token_dim)
 
         all_dims = [input_dim] + list(down_dims)
         start_dim = down_dims[0]
@@ -260,7 +271,7 @@ class StaticAttentionConditionalUnet1D(nn.Module):
                     AttentionConditionalResidualBlock1D(
                         local_cond_dim,
                         dim_out,
-                        cond_token_dim=global_cond_dim,
+                        cond_token_dim=unified_token_dim,
                         kernel_size=kernel_size,
                         n_groups=n_groups,
                         num_attention_heads=num_attention_heads,
@@ -275,7 +286,7 @@ class StaticAttentionConditionalUnet1D(nn.Module):
                     AttentionConditionalResidualBlock1D(
                         local_cond_dim,
                         dim_out,
-                        cond_token_dim=global_cond_dim,
+                        cond_token_dim=unified_token_dim,
                         kernel_size=kernel_size,
                         n_groups=n_groups,
                         num_attention_heads=num_attention_heads,
@@ -296,7 +307,7 @@ class StaticAttentionConditionalUnet1D(nn.Module):
                 AttentionConditionalResidualBlock1D(
                     mid_dim,
                     mid_dim,
-                    cond_token_dim=global_cond_dim,
+                    cond_token_dim=unified_token_dim,
                     kernel_size=kernel_size,
                     n_groups=n_groups,
                     num_attention_heads=num_attention_heads,
@@ -311,7 +322,7 @@ class StaticAttentionConditionalUnet1D(nn.Module):
                 AttentionConditionalResidualBlock1D(
                     mid_dim,
                     mid_dim,
-                    cond_token_dim=global_cond_dim,
+                    cond_token_dim=unified_token_dim,
                     kernel_size=kernel_size,
                     n_groups=n_groups,
                     num_attention_heads=num_attention_heads,
@@ -335,7 +346,7 @@ class StaticAttentionConditionalUnet1D(nn.Module):
                         AttentionConditionalResidualBlock1D(
                             dim_in,
                             dim_out,
-                            cond_token_dim=global_cond_dim,
+                            cond_token_dim=unified_token_dim,
                             kernel_size=kernel_size,
                             n_groups=n_groups,
                             num_attention_heads=num_attention_heads,
@@ -350,7 +361,7 @@ class StaticAttentionConditionalUnet1D(nn.Module):
                         AttentionConditionalResidualBlock1D(
                             dim_out,
                             dim_out,
-                            cond_token_dim=global_cond_dim,
+                            cond_token_dim=unified_token_dim,
                             kernel_size=kernel_size,
                             n_groups=n_groups,
                             num_attention_heads=num_attention_heads,
@@ -376,7 +387,7 @@ class StaticAttentionConditionalUnet1D(nn.Module):
                         AttentionConditionalResidualBlock1D(
                             dim_out * 2,
                             dim_in,
-                            cond_token_dim=global_cond_dim,
+                            cond_token_dim=unified_token_dim,
                             kernel_size=kernel_size,
                             n_groups=n_groups,
                             num_attention_heads=num_attention_heads,
@@ -391,7 +402,7 @@ class StaticAttentionConditionalUnet1D(nn.Module):
                         AttentionConditionalResidualBlock1D(
                             dim_in,
                             dim_in,
-                            cond_token_dim=global_cond_dim,
+                            cond_token_dim=unified_token_dim,
                             kernel_size=kernel_size,
                             n_groups=n_groups,
                             num_attention_heads=num_attention_heads,
@@ -453,10 +464,13 @@ class StaticAttentionConditionalUnet1D(nn.Module):
         batch_size: int,
         device: torch.device,
     ) -> tuple:
-        # Observation tokens and metadata
+        # Observation tokens: project from encoder output dim to unified_token_dim ONCE here.
+        # All attention blocks then receive tokens already in unified_token_dim space, so
+        # each block's cond_proj only lifts from unified_token_dim → embed_dim (not from
+        # the raw encoder dim). This keeps backward gradients to the encoder bounded.
         if global_cond is None:
             model_dtype = self.timestep_to_token.weight.dtype
-            obs_tokens = torch.zeros(batch_size, 0, self.global_cond_dim, device=device, dtype=model_dtype)
+            obs_tokens = torch.zeros(batch_size, 0, self.unified_token_dim, device=device, dtype=model_dtype)
             obs_temporal_positions = torch.zeros(batch_size, 0, dtype=torch.long, device=device)
             obs_modality_indices = torch.zeros(batch_size, 0, dtype=torch.long, device=device)
             obs_range_indices = torch.zeros(batch_size, 0, dtype=torch.long, device=device)
@@ -469,7 +483,7 @@ class StaticAttentionConditionalUnet1D(nn.Module):
                 raise ValueError(f"global_cond batch {global_cond.shape[0]} != sample batch {batch_size}")
             if global_cond.shape[-1] != self.global_cond_dim:
                 raise ValueError(f"global_cond dim {global_cond.shape[-1]} != expected {self.global_cond_dim}")
-            obs_tokens = global_cond
+            obs_tokens = self.global_to_token(global_cond)  # (B, N, unified_token_dim)
             n_obs_tokens = obs_tokens.shape[1]
 
             if self.use_temporal_pos_emb:

@@ -136,7 +136,7 @@ training:
   gradient_accumulate_every: 1
   lr_scheduler: cosine
   lr_warmup_steps: 500
-  encoder_lr_scale: 1.0  # Fine-tune encoder and UNet at same LR
+  encoder_lr_scale: 0.1  # Lower LR for encoder: cross-attn amplifies encoder gradients ~12x
   max_train_steps: null  # per epoch training steps
   max_val_steps: null
   total_train_steps: 200000
