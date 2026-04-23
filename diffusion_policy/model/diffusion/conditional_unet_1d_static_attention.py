@@ -133,20 +133,15 @@ class CrossAttentionConditioning(nn.Module):
                 token_mask=obs_token_mask,
             )
 
-        # Cast to fp32 for attention + FFN: bf16 cross-attention backward can produce NaN
-        # when attention logits or FFN activations cause catastrophic cancellation in the
-        # gradient computation. fp32 has sufficient range to keep these operations stable.
-        x_fp32 = x.float()
-        cond_fp32 = cond.float()
-        cond_normed = self.cond_norm(cond_fp32)
+        cond_normed = self.cond_norm(cond)
         attn_out, _ = self.cross_attn(
-            query=self.query_norm(x_fp32),
+            query=self.query_norm(x),
             key=cond_normed,
             value=cond_normed,
             need_weights=False,
         )
-        x = (x_fp32 + attn_out).to(x.dtype)
-        x = x + self.ffn(self.ffn_norm(x.float())).to(x.dtype)
+        x = x + attn_out
+        x = x + self.ffn(self.ffn_norm(x))
         return x
 
 
@@ -555,108 +550,125 @@ class StaticAttentionConditionalUnet1D(nn.Module):
         Returns:
             (B, T, input_dim)
         """
-        sample = sample.permute(0, 2, 1).contiguous()  # "b h t -> b t h"
-        batch_size = sample.shape[0]
+        # Run the entire UNet in fp32.
+        #
+        # Why only this UNet and not the FiLM version: cross-attention adds TWO extra
+        # residual connections per block (attn residual + FFN residual) on top of the
+        # standard ResNet skip. With 12 blocks stacked, gradients at deep conv layers
+        # (e.g. Conv1d 512→1024, k=5) accumulate contributions from all downstream
+        # residuals and can exceed bf16 range (~65504), producing NaN. FiLM modulates
+        # via scale/shift, which does not add an independent gradient path, so the same
+        # conv layers stay stable in bf16 under FiLM conditioning.
+        orig_dtype = sample.dtype
+        with torch.autocast(device_type=sample.device.type, enabled=False):
+            sample = sample.float()
+            if global_cond is not None:
+                global_cond = global_cond.float()
+            if local_cond is not None:
+                local_cond = local_cond.float()
 
-        (
-            cond_tokens,
-            cond_temporal_positions,
-            cond_modality_indices,
-            cond_range_indices,
-            cond_obs_token_mask,
-        ) = self._prepare_cond_tokens(
-            timestep=timestep,
-            global_cond=global_cond,
-            temporal_positions=temporal_positions,
-            modality_indices=modality_indices,
-            range_indices=range_indices,
-            batch_size=batch_size,
-            device=sample.device,
-        )
-        cond_tokens = cond_tokens.to(dtype=sample.dtype, device=sample.device)
+            sample = sample.permute(0, 2, 1).contiguous()  # "b h t -> b t h"
+            batch_size = sample.shape[0]
 
-        h_local = []
-        if local_cond is not None and self.local_cond_encoder is not None:
-            local_cond = local_cond.permute(0, 2, 1).contiguous()  # "b h t -> b t h"
-            resnet, resnet2 = self.local_cond_encoder
-            x_local = resnet(
-                local_cond,
+            (
                 cond_tokens,
-                temporal_positions=cond_temporal_positions,
-                modality_indices=cond_modality_indices,
-                range_indices=cond_range_indices,
-                obs_token_mask=cond_obs_token_mask,
+                cond_temporal_positions,
+                cond_modality_indices,
+                cond_range_indices,
+                cond_obs_token_mask,
+            ) = self._prepare_cond_tokens(
+                timestep=timestep,
+                global_cond=global_cond,
+                temporal_positions=temporal_positions,
+                modality_indices=modality_indices,
+                range_indices=range_indices,
+                batch_size=batch_size,
+                device=sample.device,
             )
-            h_local.append(x_local)
-            x_local = resnet2(
-                local_cond,
-                cond_tokens,
-                temporal_positions=cond_temporal_positions,
-                modality_indices=cond_modality_indices,
-                range_indices=cond_range_indices,
-                obs_token_mask=cond_obs_token_mask,
-            )
-            h_local.append(x_local)
+            cond_tokens = cond_tokens.to(dtype=sample.dtype, device=sample.device)
 
-        x = sample
-        h = []
-        for idx, (resnet, resnet2, downsample) in enumerate(self.down_modules):
-            x = resnet(
-                x,
-                cond_tokens,
-                temporal_positions=cond_temporal_positions,
-                modality_indices=cond_modality_indices,
-                range_indices=cond_range_indices,
-                obs_token_mask=cond_obs_token_mask,
-            )
-            if idx == 0 and len(h_local) > 0:
-                x = x + h_local[0]
-            x = resnet2(
-                x,
-                cond_tokens,
-                temporal_positions=cond_temporal_positions,
-                modality_indices=cond_modality_indices,
-                range_indices=cond_range_indices,
-                obs_token_mask=cond_obs_token_mask,
-            )
-            h.append(x)
-            x = downsample(x)
+            h_local = []
+            if local_cond is not None and self.local_cond_encoder is not None:
+                local_cond = local_cond.permute(0, 2, 1).contiguous()  # "b h t -> b t h"
+                resnet, resnet2 = self.local_cond_encoder
+                x_local = resnet(
+                    local_cond,
+                    cond_tokens,
+                    temporal_positions=cond_temporal_positions,
+                    modality_indices=cond_modality_indices,
+                    range_indices=cond_range_indices,
+                    obs_token_mask=cond_obs_token_mask,
+                )
+                h_local.append(x_local)
+                x_local = resnet2(
+                    local_cond,
+                    cond_tokens,
+                    temporal_positions=cond_temporal_positions,
+                    modality_indices=cond_modality_indices,
+                    range_indices=cond_range_indices,
+                    obs_token_mask=cond_obs_token_mask,
+                )
+                h_local.append(x_local)
 
-        for mid_module in self.mid_modules:
-            x = mid_module(
-                x,
-                cond_tokens,
-                temporal_positions=cond_temporal_positions,
-                modality_indices=cond_modality_indices,
-                range_indices=cond_range_indices,
-                obs_token_mask=cond_obs_token_mask,
-            )
+            x = sample
+            h = []
+            for idx, (resnet, resnet2, downsample) in enumerate(self.down_modules):
+                x = resnet(
+                    x,
+                    cond_tokens,
+                    temporal_positions=cond_temporal_positions,
+                    modality_indices=cond_modality_indices,
+                    range_indices=cond_range_indices,
+                    obs_token_mask=cond_obs_token_mask,
+                )
+                if idx == 0 and len(h_local) > 0:
+                    x = x + h_local[0]
+                x = resnet2(
+                    x,
+                    cond_tokens,
+                    temporal_positions=cond_temporal_positions,
+                    modality_indices=cond_modality_indices,
+                    range_indices=cond_range_indices,
+                    obs_token_mask=cond_obs_token_mask,
+                )
+                h.append(x)
+                x = downsample(x)
 
-        for idx, (resnet, resnet2, upsample) in enumerate(self.up_modules):
-            h_pop = h.pop()
-            if x.shape[-1] != h_pop.shape[-1]:
-                x = x[..., :h_pop.shape[-1]]
-            x = torch.cat((x, h_pop), dim=1)
-            x = resnet(
-                x,
-                cond_tokens,
-                temporal_positions=cond_temporal_positions,
-                modality_indices=cond_modality_indices,
-                range_indices=cond_range_indices,
-                obs_token_mask=cond_obs_token_mask,
-            )
-            if idx == (len(self.up_modules) - 1) and len(h_local) > 0:
-                x = x + h_local[1]
-            x = resnet2(
-                x,
-                cond_tokens,
-                temporal_positions=cond_temporal_positions,
-                modality_indices=cond_modality_indices,
-                range_indices=cond_range_indices,
-                obs_token_mask=cond_obs_token_mask,
-            )
-            x = upsample(x)
+            for mid_module in self.mid_modules:
+                x = mid_module(
+                    x,
+                    cond_tokens,
+                    temporal_positions=cond_temporal_positions,
+                    modality_indices=cond_modality_indices,
+                    range_indices=cond_range_indices,
+                    obs_token_mask=cond_obs_token_mask,
+                )
 
-        x = self.final_conv(x)
-        x = x.permute(0, 2, 1).contiguous()  # "b t h -> b h t"
-        return x
+            for idx, (resnet, resnet2, upsample) in enumerate(self.up_modules):
+                h_pop = h.pop()
+                if x.shape[-1] != h_pop.shape[-1]:
+                    x = x[..., :h_pop.shape[-1]]
+                x = torch.cat((x, h_pop), dim=1)
+                x = resnet(
+                    x,
+                    cond_tokens,
+                    temporal_positions=cond_temporal_positions,
+                    modality_indices=cond_modality_indices,
+                    range_indices=cond_range_indices,
+                    obs_token_mask=cond_obs_token_mask,
+                )
+                if idx == (len(self.up_modules) - 1) and len(h_local) > 0:
+                    x = x + h_local[1]
+                x = resnet2(
+                    x,
+                    cond_tokens,
+                    temporal_positions=cond_temporal_positions,
+                    modality_indices=cond_modality_indices,
+                    range_indices=cond_range_indices,
+                    obs_token_mask=cond_obs_token_mask,
+                )
+                x = upsample(x)
+
+            x = self.final_conv(x)
+            x = x.permute(0, 2, 1).contiguous()  # "b t h -> b h t"
+        return x.to(orig_dtype)
