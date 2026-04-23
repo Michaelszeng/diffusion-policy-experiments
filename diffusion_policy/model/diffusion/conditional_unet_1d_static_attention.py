@@ -133,15 +133,20 @@ class CrossAttentionConditioning(nn.Module):
                 token_mask=obs_token_mask,
             )
 
-        cond_normed = self.cond_norm(cond)
+        # Cast to fp32 for attention + FFN: bf16 cross-attention backward can produce NaN
+        # when attention logits or FFN activations cause catastrophic cancellation in the
+        # gradient computation. fp32 has sufficient range to keep these operations stable.
+        x_fp32 = x.float()
+        cond_fp32 = cond.float()
+        cond_normed = self.cond_norm(cond_fp32)
         attn_out, _ = self.cross_attn(
-            query=self.query_norm(x),
+            query=self.query_norm(x_fp32),
             key=cond_normed,
             value=cond_normed,
             need_weights=False,
         )
-        x = x + attn_out
-        x = x + self.ffn(self.ffn_norm(x))
+        x = (x_fp32 + attn_out).to(x.dtype)
+        x = x + self.ffn(self.ffn_norm(x.float())).to(x.dtype)
         return x
 
 

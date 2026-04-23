@@ -246,32 +246,113 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
             self.ema_model.to(device)
 
         # ── NaN gradient debugging ───────────────────────────────────────────
-        # Tracks gradient magnitudes at the encoder/UNet boundary every step.
+        # Per-block, per-submodule backward hooks to identify the exact operation
+        # in the UNet that generates NaN gradients.
         # Enable with training.debug_nan_grad: true in config.
+        #
+        # Gradient path through each CrossAttentionConditioning block (backward):
+        #   downstream bf16 grad
+        #     → FFN residual (fp32 FFN backward, cast back to bf16)
+        #     → attention residual (cast bf16→fp32, cross_attn backward in fp32)
+        #     → cond_normed grad (fp32) → .float() cast backward → bf16
+        #     → cond_proj backward (bf16) → grad to cond_tokens → global_to_token
+        #
+        # Key question: does NaN arise in cross_attn backward (fp32) or in
+        # cond_proj backward (bf16, after the fp32→bf16 cast)?
         debug_nan_grad = getattr(cfg.training, "debug_nan_grad", False)
-        _grad_flow = {}  # written by backward hook below, read each training step
+        _grad_flow = {}   # written by backward hooks, read each training step
+        _block_grads = {} # per-block: {block_name: {"cross_attn_go_nan": bool, "cond_proj_gi_nan": bool, ...}}
+        _debug_hook_handles = []
 
-        if debug_nan_grad and hasattr(unwrapped_model, "model") and hasattr(unwrapped_model.model, "global_to_token"):
-            def _global_to_token_bwd_hook(module, grad_input, grad_output):
-                # grad_output: gradient flowing INTO global_to_token from the UNet side
-                # grad_input:  gradient flowing OUT of global_to_token toward the encoder
-                go = grad_output[0]
-                gi = grad_input[0] if (grad_input and grad_input[0] is not None) else None
-                if go is not None:
-                    go_f = go.detach().float()
-                    _grad_flow["from_unet_max"] = go_f.abs().max().item()
-                    _grad_flow["from_unet_nan"] = bool(go_f.isnan().any())
-                    _grad_flow["from_unet_inf"] = bool(go_f.isinf().any())
-                if gi is not None:
-                    gi_f = gi.detach().float()
-                    _grad_flow["to_encoder_max"] = gi_f.abs().max().item()
-                    _grad_flow["to_encoder_nan"] = bool(gi_f.isnan().any())
-                    _grad_flow["to_encoder_inf"] = bool(gi_f.isinf().any())
+        if debug_nan_grad and hasattr(unwrapped_model, "model"):
+            unet = unwrapped_model.model
 
-            _bwd_hook_handle = unwrapped_model.model.global_to_token.register_backward_hook(
-                _global_to_token_bwd_hook
+            # Collect all CrossAttentionConditioning blocks with their names
+            named_ca_blocks = []
+            if hasattr(unet, "down_modules"):
+                for i, module_list in enumerate(unet.down_modules):
+                    for j, block in enumerate(list(module_list)[:2]):  # skip Downsample
+                        named_ca_blocks.append((f"down[{i}][{j}]", block.cross_attention))
+            if hasattr(unet, "mid_modules"):
+                for i, block in enumerate(unet.mid_modules):
+                    named_ca_blocks.append((f"mid[{i}]", block.cross_attention))
+            if hasattr(unet, "up_modules"):
+                for i, module_list in enumerate(unet.up_modules):
+                    for j, block in enumerate(list(module_list)[:2]):  # skip Upsample
+                        named_ca_blocks.append((f"up[{i}][{j}]", block.cross_attention))
+
+            def _make_cross_attn_hook(name):
+                # grad_output[0]: gradient w.r.t. cross_attn OUTPUT (in fp32, before residual add)
+                # grad_input[0]:  gradient w.r.t. query; [1],[2]: key/value
+                # The key/value grads flow back through cond_normed → cond.float() → cond_proj.
+                # If grad_output is NaN here, the attention backward itself produced NaN (in fp32).
+                def hook(module, grad_input, grad_output):
+                    entry = _block_grads.setdefault(name, {})
+                    go = grad_output[0]
+                    if go is not None:
+                        go_f = go.detach().float()
+                        entry["cross_attn_go_max"] = go_f.abs().max().item()
+                        entry["cross_attn_go_nan"] = bool(go_f.isnan().any())
+                        entry["cross_attn_go_inf"] = bool(go_f.isinf().any())
+                    # Key/value grad — this is what flows toward cond_proj
+                    kv_grad = grad_input[1] if (len(grad_input) > 1 and grad_input[1] is not None) else None
+                    if kv_grad is not None:
+                        kv_f = kv_grad.detach().float()
+                        entry["cross_attn_kv_grad_max"] = kv_f.abs().max().item()
+                        entry["cross_attn_kv_grad_nan"] = bool(kv_f.isnan().any())
+                return hook
+
+            def _make_cond_proj_hook(name):
+                # grad_output[0]: gradient arriving at cond_proj from cross_attn (in bf16,
+                #                 after the fp32→bf16 cast in .float() backward).
+                # grad_input[0]:  gradient cond_proj sends to cond_tokens → global_to_token.
+                # If grad_output is finite but grad_input is NaN → bf16 matmul overflowed.
+                # If grad_output is already NaN → overflow happened at the fp32→bf16 cast.
+                def hook(module, grad_input, grad_output):
+                    entry = _block_grads.setdefault(name, {})
+                    go = grad_output[0]
+                    gi = grad_input[0] if (grad_input and grad_input[0] is not None) else None
+                    if go is not None:
+                        go_f = go.detach().float()
+                        entry["cond_proj_go_max"] = go_f.abs().max().item()
+                        entry["cond_proj_go_nan"] = bool(go_f.isnan().any())
+                    if gi is not None:
+                        gi_f = gi.detach().float()
+                        entry["cond_proj_gi_max"] = gi_f.abs().max().item()
+                        entry["cond_proj_gi_nan"] = bool(gi_f.isnan().any())
+                return hook
+
+            for name, ca_block in named_ca_blocks:
+                _block_grads[name] = {}
+                _debug_hook_handles.append(
+                    ca_block.cross_attn.register_backward_hook(_make_cross_attn_hook(name))
+                )
+                _debug_hook_handles.append(
+                    ca_block.cond_proj.register_backward_hook(_make_cond_proj_hook(name))
+                )
+
+            # global_to_token boundary hook (confirms NaN reaches encoder)
+            if hasattr(unet, "global_to_token"):
+                def _global_to_token_bwd_hook(module, grad_input, grad_output):
+                    go = grad_output[0]
+                    gi = grad_input[0] if (grad_input and grad_input[0] is not None) else None
+                    if go is not None:
+                        go_f = go.detach().float()
+                        _grad_flow["from_unet_max"] = go_f.abs().max().item()
+                        _grad_flow["from_unet_nan"] = bool(go_f.isnan().any())
+                        _grad_flow["from_unet_inf"] = bool(go_f.isinf().any())
+                    if gi is not None:
+                        gi_f = gi.detach().float()
+                        _grad_flow["to_encoder_max"] = gi_f.abs().max().item()
+                        _grad_flow["to_encoder_nan"] = bool(gi_f.isnan().any())
+                _debug_hook_handles.append(
+                    unet.global_to_token.register_backward_hook(_global_to_token_bwd_hook)
+                )
+
+            accelerator.print(
+                f"NaN gradient debugging enabled — hooked {len(named_ca_blocks)} CrossAttentionConditioning "
+                f"blocks (cross_attn + cond_proj per block) + global_to_token boundary."
             )
-            accelerator.print("NaN gradient debugging enabled — logging encoder/UNet gradient flow every step.")
 
         # Optionally compile the diffusion UNet (the hot inner loop)
         # NOTE: not well tested (unsure if this speeds up training or not)
@@ -390,50 +471,83 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                         # Backward pass — accelerator handles gradient scaling (fp16 GradScaler)
                         accelerator.backward(loss)
 
-                        # NaN gradient diagnostics (runs before clip so we see the raw gradients)
+                        # NaN gradient diagnostics (runs before clip so we see raw gradients)
                         if debug_nan_grad and accelerator.is_main_process:
-                            enc_grad_max = 0.0
-                            enc_nan_params = []
-                            enc_inf_params = []
-                            for name, p in unwrapped_model.obs_encoder.named_parameters():
-                                if p.grad is not None:
-                                    g = p.grad.detach().float()
-                                    enc_grad_max = max(enc_grad_max, g.abs().max().item())
-                                    if g.isnan().any():
-                                        enc_nan_params.append(name)
-                                    elif g.isinf().any():
-                                        enc_inf_params.append(name)
-
                             from_unet_nan = _grad_flow.get("from_unet_nan", False)
                             from_unet_inf = _grad_flow.get("from_unet_inf", False)
-                            to_enc_nan = _grad_flow.get("to_encoder_nan", False)
 
-                            if from_unet_nan or from_unet_inf or enc_nan_params or enc_inf_params:
-                                src = "UNet backward" if (from_unet_nan or from_unet_inf) else "encoder backward"
+                            if from_unet_nan or from_unet_inf:
+                                # Scan per-block data to find the NaN origin
+                                # Backward runs up→mid→down, so iterate in that order to find the
+                                # first block where NaN is introduced into the gradient stream.
+                                first_cross_attn_nan = None  # block where cross_attn backward produces NaN
+                                first_cond_proj_go_nan = None  # block where NaN arrives at cond_proj (fp32→bf16 cast overflow)
+                                first_cond_proj_gi_nan = None  # block where cond_proj backward itself produces NaN
+                                for bname, bdata in _block_grads.items():
+                                    if bdata.get("cross_attn_go_nan") or bdata.get("cross_attn_kv_grad_nan"):
+                                        if first_cross_attn_nan is None:
+                                            first_cross_attn_nan = bname
+                                    if bdata.get("cond_proj_go_nan") and first_cond_proj_go_nan is None:
+                                        first_cond_proj_go_nan = bname
+                                    if bdata.get("cond_proj_gi_nan") and first_cond_proj_gi_nan is None:
+                                        first_cond_proj_gi_nan = bname
+
+                                # Determine root cause from the pattern:
+                                # - cross_attn NaN → attention backward produced NaN (in fp32)
+                                # - cond_proj_go NaN but NOT cross_attn NaN → fp32→bf16 cast overflow
+                                # - cond_proj_gi NaN but NOT cond_proj_go NaN → bf16 matmul overflow in cond_proj
+                                if first_cross_attn_nan:
+                                    cause = f"cross_attn backward NaN (fp32) in block {first_cross_attn_nan}"
+                                elif first_cond_proj_go_nan:
+                                    cause = f"fp32→bf16 cast overflow before cond_proj in block {first_cond_proj_go_nan}"
+                                elif first_cond_proj_gi_nan:
+                                    cause = f"cond_proj bf16 matmul overflow in block {first_cond_proj_gi_nan}"
+                                else:
+                                    cause = "unknown (NaN reached global_to_token but not traced to a block)"
+
+                                # Print per-block summary for the first NaN block
+                                nan_block_name = first_cross_attn_nan or first_cond_proj_go_nan or first_cond_proj_gi_nan
+                                nan_block_data = _block_grads.get(nan_block_name, {}) if nan_block_name else {}
                                 accelerator.print(
-                                    f"Step {self.global_step}: NaN/inf gradient detected — source: {src} | "
-                                    f"from_unet_max={_grad_flow.get('from_unet_max', float('nan')):.3e} "
-                                    f"from_unet_nan={from_unet_nan} from_unet_inf={from_unet_inf} | "
-                                    f"to_enc_nan={to_enc_nan} | "
-                                    f"enc_nan_params={enc_nan_params[:3]} enc_inf_params={enc_inf_params[:3]}"
+                                    f"Step {self.global_step}: UNet NaN gradient — {cause}\n"
+                                    f"  global_to_token: from_unet_max={_grad_flow.get('from_unet_max', float('nan')):.3e} "
+                                    f"to_encoder_max={_grad_flow.get('to_encoder_max', float('nan')):.3e}\n"
+                                    f"  block {nan_block_name}: {nan_block_data}"
                                 )
 
                             step_log.update({
                                 "debug/from_unet_max": _grad_flow.get("from_unet_max", float("nan")),
                                 "debug/from_unet_nan": float(from_unet_nan or from_unet_inf),
                                 "debug/to_encoder_max": _grad_flow.get("to_encoder_max", float("nan")),
-                                "debug/enc_grad_max": enc_grad_max,
-                                "debug/enc_has_nan_grad": float(bool(enc_nan_params or enc_inf_params)),
                             })
+                            # Clear per-block data for next step
+                            for bdata in _block_grads.values():
+                                bdata.clear()
 
                         # Step optimizer
                         if self.global_step % cfg.training.gradient_accumulate_every == 0:
-                            grad_clip = getattr(cfg.training, "gradient_clip_val", None)
-                            if grad_clip is not None:
-                                accelerator.clip_grad_norm_(self.model.parameters(), grad_clip)
-                            self.optimizer.step()
-                            self.optimizer.zero_grad()
-                            lr_scheduler.step()
+                            # Check for NaN in UNet gradients before clipping.
+                            # clip_grad_norm_ with a NaN gradient produces a NaN total norm,
+                            # which then multiplies every parameter's gradient by 1/NaN and
+                            # corrupts all weights in one step. Detect via global_to_token
+                            # (cheap O(embed_dim²) check; its grad is NaN whenever the UNet
+                            # backward produces NaN that would flow to the encoder).
+                            unet_grad_nan = False
+                            gt = getattr(getattr(unwrapped_model, "model", None), "global_to_token", None)
+                            if gt is not None and gt.weight.grad is not None:
+                                unet_grad_nan = gt.weight.grad.isnan().any().item() or gt.weight.grad.isinf().any().item()
+
+                            if unet_grad_nan:
+                                self.optimizer.zero_grad()
+                                if accelerator.is_main_process:
+                                    accelerator.print(f"Step {self.global_step}: skipped optimizer step (NaN/inf in UNet gradients)")
+                            else:
+                                grad_clip = getattr(cfg.training, "gradient_clip_val", None)
+                                if grad_clip is not None:
+                                    accelerator.clip_grad_norm_(self.model.parameters(), grad_clip)
+                                self.optimizer.step()
+                                self.optimizer.zero_grad()
+                                lr_scheduler.step()
 
                         # Update EMA model
                         if cfg.training.use_ema:
