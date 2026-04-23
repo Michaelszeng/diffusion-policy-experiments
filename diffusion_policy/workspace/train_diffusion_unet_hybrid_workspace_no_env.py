@@ -245,6 +245,34 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
         if self.ema_model is not None:
             self.ema_model.to(device)
 
+        # ── NaN gradient debugging ───────────────────────────────────────────
+        # Tracks gradient magnitudes at the encoder/UNet boundary every step.
+        # Enable with training.debug_nan_grad: true in config.
+        debug_nan_grad = getattr(cfg.training, "debug_nan_grad", False)
+        _grad_flow = {}  # written by backward hook below, read each training step
+
+        if debug_nan_grad and hasattr(unwrapped_model, "model") and hasattr(unwrapped_model.model, "global_to_token"):
+            def _global_to_token_bwd_hook(module, grad_input, grad_output):
+                # grad_output: gradient flowing INTO global_to_token from the UNet side
+                # grad_input:  gradient flowing OUT of global_to_token toward the encoder
+                go = grad_output[0]
+                gi = grad_input[0] if (grad_input and grad_input[0] is not None) else None
+                if go is not None:
+                    go_f = go.detach().float()
+                    _grad_flow["from_unet_max"] = go_f.abs().max().item()
+                    _grad_flow["from_unet_nan"] = bool(go_f.isnan().any())
+                    _grad_flow["from_unet_inf"] = bool(go_f.isinf().any())
+                if gi is not None:
+                    gi_f = gi.detach().float()
+                    _grad_flow["to_encoder_max"] = gi_f.abs().max().item()
+                    _grad_flow["to_encoder_nan"] = bool(gi_f.isnan().any())
+                    _grad_flow["to_encoder_inf"] = bool(gi_f.isinf().any())
+
+            _bwd_hook_handle = unwrapped_model.model.global_to_token.register_backward_hook(
+                _global_to_token_bwd_hook
+            )
+            accelerator.print("NaN gradient debugging enabled — logging encoder/UNet gradient flow every step.")
+
         # Optionally compile the diffusion UNet (the hot inner loop)
         # NOTE: not well tested (unsure if this speeds up training or not)
         if getattr(cfg.training, "use_torch_compile", False):
@@ -361,6 +389,42 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
 
                         # Backward pass — accelerator handles gradient scaling (fp16 GradScaler)
                         accelerator.backward(loss)
+
+                        # NaN gradient diagnostics (runs before clip so we see the raw gradients)
+                        if debug_nan_grad and accelerator.is_main_process:
+                            enc_grad_max = 0.0
+                            enc_nan_params = []
+                            enc_inf_params = []
+                            for name, p in unwrapped_model.obs_encoder.named_parameters():
+                                if p.grad is not None:
+                                    g = p.grad.detach().float()
+                                    enc_grad_max = max(enc_grad_max, g.abs().max().item())
+                                    if g.isnan().any():
+                                        enc_nan_params.append(name)
+                                    elif g.isinf().any():
+                                        enc_inf_params.append(name)
+
+                            from_unet_nan = _grad_flow.get("from_unet_nan", False)
+                            from_unet_inf = _grad_flow.get("from_unet_inf", False)
+                            to_enc_nan = _grad_flow.get("to_encoder_nan", False)
+
+                            if from_unet_nan or from_unet_inf or enc_nan_params or enc_inf_params:
+                                src = "UNet backward" if (from_unet_nan or from_unet_inf) else "encoder backward"
+                                accelerator.print(
+                                    f"Step {self.global_step}: NaN/inf gradient detected — source: {src} | "
+                                    f"from_unet_max={_grad_flow.get('from_unet_max', float('nan')):.3e} "
+                                    f"from_unet_nan={from_unet_nan} from_unet_inf={from_unet_inf} | "
+                                    f"to_enc_nan={to_enc_nan} | "
+                                    f"enc_nan_params={enc_nan_params[:3]} enc_inf_params={enc_inf_params[:3]}"
+                                )
+
+                            step_log.update({
+                                "debug/from_unet_max": _grad_flow.get("from_unet_max", float("nan")),
+                                "debug/from_unet_nan": float(from_unet_nan or from_unet_inf),
+                                "debug/to_encoder_max": _grad_flow.get("to_encoder_max", float("nan")),
+                                "debug/enc_grad_max": enc_grad_max,
+                                "debug/enc_has_nan_grad": float(bool(enc_nan_params or enc_inf_params)),
+                            })
 
                         # Step optimizer
                         if self.global_step % cfg.training.gradient_accumulate_every == 0:
