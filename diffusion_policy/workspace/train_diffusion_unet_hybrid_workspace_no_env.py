@@ -75,9 +75,15 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                 f"Using scaled encoder LR: encoder LR = {cfg.optimizer.lr * self.encoder_lr_scale:.6f}, "
                 f"rest = {cfg.optimizer.lr:.6f}"
             )
+            # Collect parameters from both obs encoder and short range encoder
             encoder_params = list(self.model.obs_encoder.parameters())
+            short_range_enc = getattr(self.model, "short_range_encoder", None)
+            if short_range_enc is not None:
+                encoder_params += list(short_range_enc.parameters())
+            # Collect non-observation encoder parameters
             encoder_param_ids = {id(p) for p in encoder_params}
             other_params = [p for p in self.model.parameters() if id(p) not in encoder_param_ids]
+            # Set learning rates
             optimizer_class = getattr(optim, cfg.optimizer._target_.split(".")[-1])
             optimizer_kwargs = dict(cfg.optimizer)
             optimizer_kwargs.pop("_target_")

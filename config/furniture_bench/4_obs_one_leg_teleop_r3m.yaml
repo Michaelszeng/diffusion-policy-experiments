@@ -94,11 +94,20 @@ policy:  # Parameters to be passed to policy (i.e. the _target_ policy class bel
   num_DDIM_inference_steps: 10  # DDIM scheduler is used during inference
   shape_meta: ${shape_meta}
   inference_loading: false
+  short_range_obs_horizon: 2  # Most recent 2 frames encoded by short_range_encoder; null to disable
+  short_range_dropout: 0.1    # Per-sample probability of replacing short-range tokens with null token during training
   obs_encoder:
     _target_: diffusion_policy.model.vision.r3m_config_util.R3MObsEncoder
     shape_meta: ${shape_meta}
     freeze_encoder: false
-    use_groupnorm: false  # Replace BatchNorm with GroupNorm for bf16 stability
+    use_groupnorm: false
+    projection_dim: 128
+    front_camera_key: color_image2
+  short_range_encoder:
+    _target_: diffusion_policy.model.vision.r3m_config_util.R3MObsEncoder
+    shape_meta: ${shape_meta}
+    freeze_encoder: false
+    use_groupnorm: false
     projection_dim: 128
     front_camera_key: color_image2
 task:

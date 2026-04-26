@@ -36,6 +36,9 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         num_DDPM_inference_steps: int = 100,
         num_DDIM_inference_steps: int = 10,
         obs_encoder: nn.Module = None,  # Required: Hydra-instantiated encoder (e.g. RobomimicObsEncoder, ResNetObsEncoder)
+        short_range_encoder: nn.Module = None,  # Optional: separate encoder for the most recent short_range_obs_horizon frames
+        short_range_obs_horizon: Optional[int] = None,  # Number of most-recent frames treated as short-range; None disables dual-encoder
+        short_range_dropout: float = 0.0,  # Probability of replacing short-range features with a learned null token during training
         self_trained_obs_encoder: str = None,  # Path to a checkpoint file to load obs encoder weights from
         freeze_self_trained_obs_encoder: bool = False,  # Freeze encoder after loading self_trained_obs_encoder weights
         inference_loading: bool = False,  # Skip self_trained_obs_encoder loading during inference (use final checkpoint weights)
@@ -74,8 +77,23 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
                 "(or another encoder class)."
             )
 
+        if short_range_obs_horizon is not None:
+            assert isinstance(short_range_obs_horizon, int) and short_range_obs_horizon >= 0, \
+                f"short_range_obs_horizon must be a non-negative integer, got {short_range_obs_horizon}"
+            assert short_range_obs_horizon < n_obs_steps, \
+                f"short_range_obs_horizon ({short_range_obs_horizon}) must be strictly less than n_obs_steps ({n_obs_steps})"
+            assert 0.0 <= short_range_dropout <= 1.0, \
+                f"short_range_dropout must be in [0, 1], got {short_range_dropout}"
+            assert short_range_encoder is not None, \
+                "short_range_encoder must be provided when short_range_obs_horizon is not None"
+            assert short_range_encoder.output_shape() == obs_encoder.output_shape(), \
+                f"short_range_encoder output shape {short_range_encoder.output_shape()} must match obs_encoder {obs_encoder.output_shape()}"
+
         obs_feature_dim = obs_encoder.output_shape()[0]
-        global_cond_dim = obs_feature_dim * n_obs_steps + one_hot_encoding_dim
+        if short_range_obs_horizon is not None:
+            global_cond_dim = obs_feature_dim * (n_obs_steps + short_range_obs_horizon) + one_hot_encoding_dim
+        else:
+            global_cond_dim = obs_feature_dim * n_obs_steps + one_hot_encoding_dim
         input_dim = action_dim
         print(f"Input dim: {input_dim}, Global cond dim: {global_cond_dim}")
         model = ConditionalUnet1D(
@@ -108,6 +126,11 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
 
         self.past_action_visible = past_action_visible
         self.obs_encoder = obs_encoder
+        self.short_range_encoder = short_range_encoder
+        self.short_range_obs_horizon = short_range_obs_horizon
+        self.short_range_dropout = short_range_dropout
+        if short_range_obs_horizon is not None:
+            self.short_range_null_token = nn.Parameter(torch.zeros(1, obs_feature_dim))
         self.model = model
         self.DDPM_noise_scheduler = DDPM_noise_scheduler
         self.DDIM_noise_scheduler = DDIM_noise_scheduler
@@ -128,6 +151,8 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
 
         print("Diffusion params: %e" % sum(p.numel() for p in self.model.parameters()))
         print("Observation Encoder params: %e" % sum(p.numel() for p in self.obs_encoder.parameters()))
+        if short_range_encoder is not None:
+            print("Short-range Encoder params: %e" % sum(p.numel() for p in self.short_range_encoder.parameters()))
 
     def _load_and_freeze_obs_encoder(self, obs_encoder, checkpoint_path, freeze):
         """
@@ -159,6 +184,48 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
             print("Freezing obs encoder parameters.")
             for param in obs_encoder.parameters():
                 param.requires_grad = False
+
+    def _encode_obs(self, nobs: dict, B: int) -> torch.Tensor:
+        """
+        Encode n_obs_steps observation timesteps into a flat global conditioning vector.
+
+        Single encoder: shape (B, obs_feature_dim * n_obs_steps).
+        Dual encoders: ALL n_obs_steps frames are encoded by obs_encoder (long-range).
+        Additionally, the most recent short_range_obs_horizon frames are encoded by
+        short_range_encoder (short-range) and appended. Output shape:
+        (B, obs_feature_dim * (n_obs_steps + short_range_obs_horizon)).
+        During training, short-range features are replaced with a learned null token
+        per sample with probability short_range_dropout.
+        """
+        To = self.n_obs_steps
+
+        if self.short_range_obs_horizon is None:
+            # Single encoder (original behavior)
+            this_nobs = dict_apply(nobs, lambda x: x[:, :To, ...].reshape(-1, *x.shape[2:]))
+            return self.obs_encoder(this_nobs).reshape(B, -1)
+
+        # All frames → long-range; most recent To_short frames ALSO → short-range
+        To_short = self.short_range_obs_horizon
+        short_start = To - To_short
+
+        all_nobs = dict_apply(nobs, lambda x: x[:, :To, ...].reshape(-1, *x.shape[2:]))
+        long_features = self.obs_encoder(all_nobs).reshape(B, To, self.obs_feature_dim)
+
+        short_nobs = dict_apply(nobs, lambda x: x[:, short_start:To, ...].reshape(-1, *x.shape[2:]))
+        short_features = self.short_range_encoder(short_nobs).reshape(B, To_short, self.obs_feature_dim)
+
+        # Per-sample short-range dropout
+        if self.training and self.short_range_dropout > 0.0:
+            device = long_features.device
+            drop_mask = torch.bernoulli(
+                torch.full((B,), self.short_range_dropout, device=device)
+            ).bool()
+            if drop_mask.any():
+                null = self.short_range_null_token.view(1, 1, -1).expand(B, To_short, -1)
+                short_features = torch.where(drop_mask.view(B, 1, 1), null, short_features)
+
+        # Concatenate long-range then short-range and flatten
+        return torch.cat([long_features, short_features], dim=1).reshape(B, -1)
 
     def get_inpaint_mask(self, shape):
         """
@@ -291,10 +358,7 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
             To = self.n_obs_steps  # To = obs horizon
 
             # Encode observations into global conditioning vector
-            this_nobs = dict_apply(nobs, lambda x: x[:, :To, ...].reshape(-1, *x.shape[2:]))
-            nobs_features = self.obs_encoder(this_nobs)
-            # Reshape back to B, Do
-            global_cond = nobs_features.reshape(B, -1)
+            global_cond = self._encode_obs(nobs, B)
 
             # No inpainting
             inpaint_data = torch.zeros(size=(B, T, Da), device=self.device, dtype=self.dtype)
@@ -374,12 +438,7 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         horizon = nactions.shape[1]
 
         # encode observations into global conditioning vector
-        global_cond = None
-        # reshape B, T, ... to B*T
-        this_nobs = dict_apply(nobs, lambda x: x[:, : self.n_obs_steps, ...].reshape(-1, *x.shape[2:]))
-        nobs_features = self.obs_encoder(this_nobs)
-        # reshape back to B, Do
-        global_cond = nobs_features.reshape(B, -1)  # B, Do
+        global_cond = self._encode_obs(nobs, B)
 
         # append one hot encoding to global conditioning vector
         if self.one_hot_encoding_dim > 0:
