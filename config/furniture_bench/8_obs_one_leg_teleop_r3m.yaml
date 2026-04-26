@@ -98,7 +98,7 @@ policy:  # Parameters to be passed to policy (i.e. the _target_ policy class bel
     _target_: diffusion_policy.model.vision.r3m_config_util.R3MObsEncoder
     shape_meta: ${shape_meta}
     freeze_encoder: false
-    use_groupnorm: true  # Replace BatchNorm with GroupNorm for bf16 stability
+    use_groupnorm: false  # Replace BatchNorm with GroupNorm for bf16 stability
     projection_dim: 128
     front_camera_key: color_image2
 task:
@@ -137,7 +137,7 @@ training:
   gradient_accumulate_every: 1
   lr_scheduler: cosine
   lr_warmup_steps: 500
-  encoder_lr_scale: 0.1  # Lower LR for encoder: cross-attn amplifies encoder gradients ~12x
+  encoder_lr_scale: 1.0
   max_train_steps: null  # per epoch training steps
   max_val_steps: null
   total_train_steps: 200000

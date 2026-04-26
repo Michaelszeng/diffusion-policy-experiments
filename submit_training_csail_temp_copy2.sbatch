@@ -8,7 +8,7 @@
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=20
 #SBATCH --mem=256G
-#SBATCH --time=24:00:00
+#SBATCH --time=96:00:00
 #SBATCH --output=logs/slurm-%j.out
 #SBATCH --error=logs/slurm-%j.err
 #SBATCH --requeue
@@ -23,7 +23,7 @@ LR=1e-4
 
 NUM_WORKERS=8
 RESUME=True  # NOTE: always set to True so that requeueing will automatically resume from the last checkpoint
-CHECKPOINT_PATH=""  # .ckpt file (or empty for latest.ckpt)
+CHECKPOINT_PATH=""  # path to .ckpt file (or empty for latest.ckpt)
 
 USE_TORCH_COMPILE=false
 TORCH_COMPILE_MODE='default'
@@ -89,13 +89,19 @@ export HYDRA_FULL_ERROR=1
 
 # --- Furniture Bench ---
 EXPERIMENT_CLASS=furniture_bench
-# EXPERIMENT_NAME=2_obs_one_leg_teleop  # batch size 64, LR 1e-4
-# EXPERIMENT_NAME=lowdim_2_obs_one_leg_scripted  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=4_obs_one_leg_teleop_r3m  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=8_obs_one_leg_teleop_r3m  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=16_obs_one_leg_teleop_r3m  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m_only_imitation_juicer_data  # batch size 64, LR 1e-4
+
+# EXPERIMENT_NAME=lowdim_2_obs_one_leg_scripted_r3m  # batch size 64, LR 1e-4
 
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_100_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_200_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_400_eps  # batch size 64, LR 1e-4
 
+# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_200_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_03125_200_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_0625_200_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_125_200_eps  # batch size 64, LR 1e-4
@@ -103,14 +109,19 @@ EXPERIMENT_CLASS=furniture_bench
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_5_200_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_75_200_eps  # batch size 64, LR 1e-4
 
-EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_03125_400_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_400_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_03125_400_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_0625_400_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_125_400_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_25_400_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_5_400_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_75_400_eps  # batch size 64, LR 1e-4
 
-# EXPERIMENT_NAME=2_obs_one_leg_teleop_no_robust_rearrangement_data  # batch size 768
+# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_dart_0_200_eps  # batch size 64, LR 1e-4
+EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_dart_0_25_200_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_dart_0_5_200_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_dart_0_400_eps  # batch size 64, LR 1e-4
+
 
 # --- Experiment Configuration ---
 CONFIG_DIR=config/${EXPERIMENT_CLASS}
