@@ -434,15 +434,43 @@ class DiffusionUnetHybridImageAttentionPolicy(BaseImagePolicy):
         self.normalizer.load_state_dict(normalizer.state_dict())
 
     def load_state_dict(self, state_dict, strict=True):
-        # Checkpoints saved with BatchNorm encoders contain running_mean / running_var /
-        # num_batches_tracked buffers that don't exist in GroupNorm. Drop them so that
-        # resuming from a pre-GroupNorm checkpoint doesn't raise "unexpected keys".
-        own_keys = set(self.state_dict().keys())
+        # Drop keys not in this model (e.g. BatchNorm buffers from pre-GroupNorm checkpoints).
+        own_state = self.state_dict()
+        own_keys = set(own_state.keys())
         filtered = {k: v for k, v in state_dict.items() if k in own_keys}
+
+        # TEMPORARY FIX FOR BACKWARD COMPATIBILITY:
+        # Handle shape mismatches. For embeddings grown along dim-0 (e.g. range_emb expanded
+        # from max_ranges=2 to 3), copy existing rows and leave new rows at their initialized
+        # values. For any other shape mismatch, keep the initialized value entirely and warn.
+        skipped = []
+        for k in list(filtered.keys()):
+            ckpt_val = filtered[k]
+            model_val = own_state[k]
+            if ckpt_val.shape == model_val.shape:
+                continue
+            if (ckpt_val.dim() == model_val.dim()
+                    and ckpt_val.shape[1:] == model_val.shape[1:]
+                    and ckpt_val.shape[0] < model_val.shape[0]):
+                # Embedding table grew: copy the rows that exist, keep new rows initialized.
+                padded = model_val.clone()
+                padded[:ckpt_val.shape[0]] = ckpt_val
+                filtered[k] = padded
+                print(f"[load_state_dict] Partial load for {k}: "
+                      f"checkpoint rows {ckpt_val.shape[0]} → model rows {model_val.shape[0]}, "
+                      f"new rows kept at initialized values.")
+            else:
+                skipped.append(f"{k}: checkpoint {tuple(ckpt_val.shape)} vs model {tuple(model_val.shape)}")
+                del filtered[k]
+
         missing = own_keys - filtered.keys()
         if missing:
-            raise RuntimeError(f"Missing key(s) in state_dict: {missing}")
-        super().load_state_dict(filtered, strict=True)
+            skipped += list(missing)
+        if skipped:
+            print(f"[load_state_dict] Keeping initialized values for {len(skipped)} key(s) "
+                  f"absent/mismatched in checkpoint: {skipped}")
+
+        super().load_state_dict(filtered, strict=False)
 
     def noise_trajectory(self, trajectory):
         """Add random amount of noise to the clean trajectory."""
