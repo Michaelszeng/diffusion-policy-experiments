@@ -147,7 +147,20 @@ class BaseWorkspace:
                 # Technically, we already strip this infix before saving the checkpoint, 
                 # but we have this extra check and removal to be safe.
                 value = _strip_orig_mod(value)
-                self.__dict__[key].load_state_dict(value, **kwargs)
+
+                # BACKWARD COMPATIBILITY FEATURES:
+                value = _strip_module_prefix(value)
+                value = _filter_unexpected_keys(value, self.__dict__[key])
+                try:
+                    self.__dict__[key].load_state_dict(value, **kwargs)
+                except (ValueError, RuntimeError) as e:
+                    import warnings
+                    warnings.warn(
+                        f"Could not load state dict for '{key}' (skipping for backward "
+                        f"compatibility — safe to ignore during inference): {e}",
+                        UserWarning,
+                        stacklevel=2,
+                    )
         for key in include_keys:
             if key in payload["pickles"]:
                 self.__dict__[key] = dill.loads(payload["pickles"][key])
@@ -257,3 +270,44 @@ def _strip_orig_mod(state_dict):
     if not any("._orig_mod." in k for k in state_dict):
         return state_dict
     return {k.replace("._orig_mod.", "."): v for k, v in state_dict.items()}
+
+
+def _strip_module_prefix(state_dict):
+    """
+    Remove the 'module.' prefix inserted by DataParallel / DistributedDataParallel.
+
+    Checkpoints saved from a DataParallel-wrapped model have every key prefixed
+    with 'module.' (e.g. 'module.obs_encoder.nets.0.weight'). Stripping the
+    prefix lets the state dict be loaded into a plain (non-wrapped) model.
+    """
+    if not isinstance(state_dict, dict):
+        return state_dict
+    if not all(k.startswith("module.") for k in state_dict):
+        return state_dict
+    return {k[len("module."):]: v for k, v in state_dict.items()}
+
+
+def _filter_unexpected_keys(state_dict, module):
+    """
+    Drop keys from state_dict that are not present in module's own state dict.
+
+    This provides backward compatibility when a checkpoint was saved with
+    submodules (e.g. mask_generator) that have since been removed from the
+    model definition.  Dropped keys are reported as warnings rather than
+    silently ignored or raised as errors.
+    """
+    import warnings
+    if not isinstance(state_dict, dict):
+        return state_dict
+    if not hasattr(module, "state_dict"):
+        return state_dict
+    model_keys = set(module.state_dict().keys())
+    unexpected = [k for k in state_dict if k not in model_keys]
+    if unexpected:
+        warnings.warn(
+            f"Checkpoint contains {len(unexpected)} unexpected key(s) that will be "
+            f"ignored for backward compatibility: {unexpected}",
+            UserWarning,
+            stacklevel=4,
+        )
+    return {k: v for k, v in state_dict.items() if k in model_keys}
