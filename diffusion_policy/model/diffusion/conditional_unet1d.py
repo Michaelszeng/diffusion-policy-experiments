@@ -295,7 +295,7 @@ class ConditionalUnet1D(nn.Module):
         for idx, (resnet, resnet2, upsample) in enumerate(self.up_modules):
             h_pop = h.pop()
             if x.shape[-1] != h_pop.shape[-1]:
-                x = x[..., : h_pop.shape[-1]]
+                x = x[..., : h_pop.shape[-1]]  # Truncate the shorter sequence to the length of the longer sequence
             x = torch.cat((x, h_pop), dim=1)
             x = resnet(x, global_feature)
             # The correct condition should be:

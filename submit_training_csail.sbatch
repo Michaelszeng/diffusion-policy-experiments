@@ -90,10 +90,21 @@ export HYDRA_FULL_ERROR=1
 # --- Furniture Bench ---
 EXPERIMENT_CLASS=furniture_bench
 # EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m  # batch size 64, LR 1e-4
-# EXPERIMENT_NAME=4_obs_one_leg_teleop_r3m  # batch size 64, LR 1e-4
-EXPERIMENT_NAME=8_obs_one_leg_teleop_r3m  # batch size 64, LR 1e-4
-# EXPERIMENT_NAME=16_obs_one_leg_teleop_r3m  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m_only_imitation_juicer_data  # batch size 64, LR 1e-4
+
+# EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m_cross_attn  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=4_obs_one_leg_teleop_r3m  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=8_obs_one_leg_teleop_r3m  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=12_obs_one_leg_teleop_r3m  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=16_obs_one_leg_teleop_r3m  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=20_obs_one_leg_teleop_r3m  # batch size 64, LR 1e-4
+
+EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m_cross_attn_double_enc  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=4_obs_one_leg_teleop_r3m_double_enc  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=8_obs_one_leg_teleop_r3m_double_enc  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=12_obs_one_leg_teleop_r3m_double_enc  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=16_obs_one_leg_teleop_r3m_double_enc  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=20_obs_one_leg_teleop_r3m_double_enc  # batch size 64, LR 1e-4
 
 # EXPERIMENT_NAME=lowdim_2_obs_one_leg_scripted_r3m  # batch size 64, LR 1e-4
 
@@ -116,6 +127,10 @@ EXPERIMENT_NAME=8_obs_one_leg_teleop_r3m  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_25_400_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_5_400_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_75_400_eps  # batch size 64, LR 1e-4
+
+# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_dart_0_200_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_dart_0_25_200_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_dart_0_5_200_eps  # batch size 64, LR 1e-4
 
 # --- Experiment Configuration ---
 CONFIG_DIR=config/${EXPERIMENT_CLASS}
@@ -142,8 +157,18 @@ if [ "$USE_TORCH_COMPILE" = "true" ]; then
     COMPILE_ARGS="training.use_torch_compile=true training.torch_compile_mode=$TORCH_COMPILE_MODE +dataloader.drop_last=true"
 fi
 
+# Pin job to one NUMA node
+GPU_BUS=$(nvidia-smi --query-gpu=pci.bus_id --format=csv,noheader | head -1 | sed 's/^00000000://')
+GPU_NUMA=$(cat /sys/bus/pci/devices/0000:${GPU_BUS,,}/numa_node)
+if [ "$GPU_NUMA" = "0" ]; then
+    NUMA_CPUS=$(cat /sys/devices/system/node/node0/cpulist)
+else
+    NUMA_CPUS=$(cat /sys/devices/system/node/node1/cpulist)
+fi
+echo "Pinning to NUMA $GPU_NUMA, CPUs: $NUMA_CPUS"
+
 if [ -z "$CHECKPOINT_PATH" ] || [ "$CHECKPOINT_PATH" == "null" ]; then
-    python train.py \
+    exec taskset -c "$NUMA_CPUS" python train.py \
         --config-dir=$CONFIG_DIR \
         --config-name=$CONFIG_NAME \
         hydra.run.dir=$HYDRA_RUN_DIR \
@@ -154,7 +179,7 @@ if [ -z "$CHECKPOINT_PATH" ] || [ "$CHECKPOINT_PATH" == "null" ]; then
         training.mixed_precision=bf16 \
         $COMPILE_ARGS
 else
-    python train.py \
+    exec taskset -c "$NUMA_CPUS" python train.py \
         --config-dir=$CONFIG_DIR \
         --config-name=$CONFIG_NAME \
         hydra.run.dir=$HYDRA_RUN_DIR \
