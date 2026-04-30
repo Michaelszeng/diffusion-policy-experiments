@@ -136,6 +136,7 @@ class DiffusionUnetHybridImageAttentionPolicy(BaseImagePolicy):
         self.short_range_obs_horizon = short_range_obs_horizon
         self.short_range_dropout = short_range_dropout
         if short_range_obs_horizon is not None:
+            # Learnable token for replacing short-range tokens for short-range dropout
             self.short_range_null_token = nn.Parameter(torch.zeros(1, obs_feature_dim))
         self.DDPM_noise_scheduler = DDPM_noise_scheduler
         self.DDIM_noise_scheduler = DDIM_noise_scheduler
@@ -213,15 +214,15 @@ class DiffusionUnetHybridImageAttentionPolicy(BaseImagePolicy):
         """
         To = self.n_obs_steps
 
+        # Shortcut: single encoder — all tokens are LONG range
         if self.short_range_obs_horizon is None:
-            # Single encoder — all tokens are LONG range
             this_nobs = dict_apply(nobs, lambda x: x[:, :To, ...].reshape(-1, *x.shape[2:]))
             nobs_features = self.obs_encoder(this_nobs)
             tokens = nobs_features.reshape(B, To, self.obs_feature_dim)
             device = tokens.device
             positions = torch.arange(To, device=device).unsqueeze(0).expand(B, -1)
             modalities = torch.ones(B, To, dtype=torch.long, device=device)
-            ranges = torch.ones(B, To, dtype=torch.long, device=device)
+            ranges = torch.ones(B, To, dtype=torch.long, device=device)  # All LONG range
             return tokens, positions, modalities, ranges
 
         # Dual encoder: all frames → long-range tokens; most-recent frames ALSO → short-range tokens.

@@ -71,10 +71,38 @@ class DiffusionUnetHybridImageTargetedPolicy(BaseImagePolicy):
         action_dim = action_shape[0]
 
         if obs_encoder is None:
-            raise ValueError(
-                "obs_encoder must be provided. Specify it in the policy config using "
-                "_target_: diffusion_policy.model.vision.robomimic_config_util.RobomimicObsEncoder "
-                "(or another encoder class)."
+            import warnings
+            warnings.warn(
+                "obs_encoder not specified in policy config; defaulting to the legacy "
+                "robomimic encoder for backward compatibility with older checkpoints. "
+                "Specify obs_encoder explicitly in the policy config using _target_: "
+                "diffusion_policy.model.vision.robomimic_config_util.RobomimicObsEncoder.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            # TEMPORARY FIX FOR BACKWARD COMPATIBILITY:
+            from diffusion_policy.model.vision.robomimic_config_util import get_robomimic_obs_encoder
+            # Old configs store RGB shapes as CHW [C, H, W]; pass directly to robomimic
+            # (which also expects CHW obs_key_shapes). The raw encoder expects CHW [-1,1]
+            # input, which matches what the normalizer produces for old checkpoints.
+            _obs_config = {"low_dim": [], "rgb": [], "depth": [], "scan": []}
+            _obs_key_shapes: dict = {}
+            for _key, _attr in shape_meta["obs"].items():
+                _shape = list(_attr["shape"])
+                _type = _attr.get("type", "low_dim")
+                if _type == "rgb":
+                    _obs_key_shapes[_key] = _shape  # already CHW
+                    _obs_config["rgb"].append(_key)
+                elif _type == "low_dim":
+                    _obs_key_shapes[_key] = _shape
+                    _obs_config["low_dim"].append(_key)
+            obs_encoder = get_robomimic_obs_encoder(
+                obs_config=_obs_config,
+                obs_key_shapes=_obs_key_shapes,
+                action_dim=action_dim,
+                pretrained_encoder=pretrained_encoder if pretrained_encoder is not None else False,
+                freeze_encoder=freeze_pretrained_encoder if freeze_pretrained_encoder is not None else False,
+                crop_shape=crop_shape,
             )
 
         if short_range_obs_horizon is not None:
