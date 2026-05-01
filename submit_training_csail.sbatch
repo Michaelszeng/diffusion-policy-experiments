@@ -99,7 +99,7 @@ EXPERIMENT_CLASS=furniture_bench
 # EXPERIMENT_NAME=16_obs_one_leg_teleop_r3m  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=20_obs_one_leg_teleop_r3m  # batch size 64, LR 1e-4
 
-EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m_cross_attn_double_enc  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m_cross_attn_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=4_obs_one_leg_teleop_r3m_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=8_obs_one_leg_teleop_r3m_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=12_obs_one_leg_teleop_r3m_double_enc  # batch size 64, LR 1e-4
@@ -166,9 +166,18 @@ else
     NUMA_CPUS=$(cat /sys/devices/system/node/node1/cpulist)
 fi
 echo "Pinning to NUMA $GPU_NUMA, CPUs: $NUMA_CPUS"
+# Verify taskset can actually apply this CPU mask before committing to it.
+# On some kernels the cpulist from sysfs can include CPU IDs that exceed the
+# kernel's NR_CPUS limit, causing sched_setaffinity to return EINVAL.
+TASKSET_PREFIX=""
+if taskset -c "$NUMA_CPUS" true 2>/dev/null; then
+    TASKSET_PREFIX="taskset -c $NUMA_CPUS"
+else
+    echo "WARNING: taskset failed for CPUs '$NUMA_CPUS' (Invalid argument or CPU out of range). Running without NUMA pinning." >&2
+fi
 
 if [ -z "$CHECKPOINT_PATH" ] || [ "$CHECKPOINT_PATH" == "null" ]; then
-    exec taskset -c "$NUMA_CPUS" python train.py \
+    exec $TASKSET_PREFIX python train.py \
         --config-dir=$CONFIG_DIR \
         --config-name=$CONFIG_NAME \
         hydra.run.dir=$HYDRA_RUN_DIR \
@@ -179,7 +188,7 @@ if [ -z "$CHECKPOINT_PATH" ] || [ "$CHECKPOINT_PATH" == "null" ]; then
         training.mixed_precision=bf16 \
         $COMPILE_ARGS
 else
-    exec taskset -c "$NUMA_CPUS" python train.py \
+    exec $TASKSET_PREFIX python train.py \
         --config-dir=$CONFIG_DIR \
         --config-name=$CONFIG_NAME \
         hydra.run.dir=$HYDRA_RUN_DIR \

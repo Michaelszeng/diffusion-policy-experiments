@@ -79,8 +79,8 @@ class DiffusionUnetHybridImageAttentionPolicy(BaseImagePolicy):
         if short_range_obs_horizon is not None:
             assert isinstance(short_range_obs_horizon, int) and short_range_obs_horizon >= 0, \
                 f"short_range_obs_horizon must be a non-negative integer, got {short_range_obs_horizon}"
-            assert short_range_obs_horizon < n_obs_steps, \
-                f"short_range_obs_horizon ({short_range_obs_horizon}) must be strictly less than n_obs_steps ({n_obs_steps})"
+            assert short_range_obs_horizon <= n_obs_steps, \
+                f"short_range_obs_horizon ({short_range_obs_horizon}) must be less than or equal to n_obs_steps ({n_obs_steps})"
             assert 0.0 <= short_range_dropout <= 1.0, \
                 f"short_range_dropout must be in [0, 1], got {short_range_dropout}"
             assert short_range_encoder is not None, \
