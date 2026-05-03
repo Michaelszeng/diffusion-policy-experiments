@@ -88,7 +88,7 @@ export HYDRA_FULL_ERROR=1
 # EXPERIMENT_NAME=18_obs_32_horizon_idle_frames_pruned
 
 # --- Furniture Bench ---
-EXPERIMENT_CLASS=furniture_bench
+# EXPERIMENT_CLASS=furniture_bench
 # EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m_only_imitation_juicer_data  # batch size 64, LR 1e-4
 
@@ -131,6 +131,16 @@ EXPERIMENT_CLASS=furniture_bench
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_dart_0_200_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_dart_0_25_200_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_dart_0_5_200_eps  # batch size 64, LR 1e-4
+
+# --- Robomimic ---
+EXPERIMENT_CLASS=robomimic
+# EXPERIMENT_NAME=2_obs_tool_hang_film  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_tool_hang_double_enc  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=4_obs_tool_hang_double_enc  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=8_obs_tool_hang_double_enc  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=12_obs_tool_hang_double_enc  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=16_obs_tool_hang_double_enc  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=20_obs_tool_hang_double_enc  # batch size 64, LR 1e-4
 
 # --- Experiment Configuration ---
 CONFIG_DIR=config/${EXPERIMENT_CLASS}

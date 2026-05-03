@@ -107,7 +107,7 @@ task:
     pad_before: ${eval:${task.dataset.n_obs_steps} - 1}
     seed: ${seed}
     zarr_configs:
-    - path: ../benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/scripted_non_markovian_0/low/success_translated.zarr
+    - path: ../benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/scripted_0_non_markovian/low/success_translated.zarr
       max_train_episodes: 190
       sampling_weight: null
       val_ratio: 0.05

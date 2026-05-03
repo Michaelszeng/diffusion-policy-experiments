@@ -72,7 +72,7 @@ shape_meta:
       - 2
       type: low_dim
 policy:
-  _target_: diffusion_policy.policy.diffusion_unet_hybrid_image_double_enc_policy.DiffusionUnetHybridImageAttentionPolicy
+  _target_: diffusion_policy.policy.diffusion_unet_hybrid_image_attention_policy.DiffusionUnetHybridImageAttentionPolicy
   diffusion_step_embed_dim: 128
   down_dims:
   - 256
@@ -84,7 +84,7 @@ policy:
   n_action_steps: ${n_action_steps}
   n_obs_steps: ${n_obs_steps}
   past_action_visible: false
-  num_double_enc_heads: 8
+  num_attention_heads: 8
   attention_dropout: 0.1
   use_temporal_pos_emb: true
   use_modality_emb: true
