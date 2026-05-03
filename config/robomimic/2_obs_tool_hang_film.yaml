@@ -104,7 +104,9 @@ policy:
     shape_meta: ${shape_meta}
     pretrained_encoder: true   # ImageNet-pretrained ResNet18 backbone
     freeze_encoder: false
-    crop_shape: null
+    crop_shape:
+    - 216
+    - 216
 task:
   dataset:
     _target_: diffusion_policy.dataset.robomimic_image_dataset.RobomimicImageDataset
