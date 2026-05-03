@@ -3,6 +3,9 @@
 # SOURCE_DIR="/home/michzeng/Downloads/IsaacGym_Preview_4_Package.tar.gz"
 # TARGET_DIR="/data/locomotion/michzeng/"
 
+SOURCE_DIR="           /home/michzeng/diffusion-policy/data/diffusion_experiments/robomimic/tool_hang/ph/image_v15.hdf5"
+TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/diffusion_experiments/robomimic/tool_hang/ph/"
+
 # SOURCE_DIR="           /home/michzeng/benchmark-furniturebench-juicer/dataset/imitation-juicer-data-processed-001/processed/sim/one_leg/teleop/low/success_truncated_translated.zarr"
 # TARGET_DIR="/data/locomotion/michzeng/benchmark-furniturebench-juicer/dataset/imitation-juicer-data-processed-001/processed/sim/one_leg/teleop/low/"
 
@@ -12,8 +15,8 @@
 # SOURCE_DIR="           /home/michzeng/benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/scripted/low/success_translated.zarr"
 # TARGET_DIR="/data/locomotion/michzeng/benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/scripted/low/"
 
-SOURCE_DIR="           /home/michzeng/benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/teleop/low/success_translated.zarr"
-TARGET_DIR="/data/locomotion/michzeng/benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/teleop/low/"
+# SOURCE_DIR="           /home/michzeng/benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/teleop/low/success_translated.zarr"
+# TARGET_DIR="/data/locomotion/michzeng/benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/teleop/low/"
 
 ####################################################################################
 

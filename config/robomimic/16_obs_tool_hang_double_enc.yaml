@@ -34,20 +34,19 @@ exp_name: defaults
 logging:
   group: null
   id: null
-  name: robomimic_tool_hang_2_obs_film
+  name: robomimic_tool_hang_16_obs_double_enc
   project: robomimic_tool_hang
 multi_run:
-  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_robomimic_tool_hang_2_obs_film
+  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_robomimic_tool_hang_16_obs_double_enc
   run_dir: data/outputs/${multi_run.wandb_name_base}
 horizon: ${eval:${n_obs_steps} + 14}
 n_action_steps: 8
-n_obs_steps: 2
+n_obs_steps: 16
 shape_meta:
   action:
     shape:
     - 7
   obs:
-    # Images: HWC order to match RobomimicObsEncoder and the passthrough normalizer
     sideview_image:
       shape:
       - 240
@@ -60,7 +59,6 @@ shape_meta:
       - 240
       - 3
       type: rgb
-    # Low-dim robot state
     robot0_eef_pos:
       shape:
       - 3
@@ -74,7 +72,7 @@ shape_meta:
       - 2
       type: low_dim
 policy:
-  _target_: diffusion_policy.policy.diffusion_unet_hybrid_image_targeted_policy.DiffusionUnetHybridImageTargetedPolicy
+  _target_: diffusion_policy.policy.diffusion_unet_hybrid_image_double_enc_policy.DiffusionUnetHybridImageAttentionPolicy
   diffusion_step_embed_dim: 128
   down_dims:
   - 256
@@ -86,6 +84,11 @@ policy:
   n_action_steps: ${n_action_steps}
   n_obs_steps: ${n_obs_steps}
   past_action_visible: false
+  num_double_enc_heads: 8
+  attention_dropout: 0.1
+  use_temporal_pos_emb: true
+  use_modality_emb: true
+  use_range_emb: true
   DDPM_noise_scheduler:
     _target_: diffusers.schedulers.scheduling_ddpm.DDPMScheduler
     beta_end: 0.02
@@ -99,10 +102,18 @@ policy:
   num_DDIM_inference_steps: 10
   shape_meta: ${shape_meta}
   inference_loading: false
+  short_range_obs_horizon: 2
+  short_range_dropout: 0.3
   obs_encoder:
     _target_: diffusion_policy.model.vision.robomimic_config_util.RobomimicObsEncoder
     shape_meta: ${shape_meta}
-    pretrained_encoder: true   # ImageNet-pretrained ResNet18 backbone
+    pretrained_encoder: true
+    freeze_encoder: false
+    crop_shape: null
+  short_range_encoder:
+    _target_: diffusion_policy.model.vision.robomimic_config_util.RobomimicObsEncoder
+    shape_meta: ${shape_meta}
+    pretrained_encoder: true
     freeze_encoder: false
     crop_shape: null
 task:
