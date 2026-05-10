@@ -99,11 +99,10 @@ policy:
     front_camera_key: color_image2
 task:
   dataset:
-    _target_: diffusion_policy.dataset.furniture_bench_dataset.FurnitureBenchDataset
+    _target_: diffusion_policy.dataset.furniture_bench_chunk_dataset.FurnitureBenchChunkDataset
     shape_meta: ${shape_meta}
     horizon: ${horizon}
     n_obs_steps: ${n_obs_steps}
-    pad_after: ${eval:${policy.horizon} - 1}
     pad_before: ${eval:${task.dataset.n_obs_steps} - 1}
     seed: ${seed}
     zarr_configs:

@@ -97,6 +97,14 @@ class ImprovedDatasetSampler:
         """
         key_first_k: dict str: int
             Only take first k data from these keys (to improve performance)
+
+        Padding behavior:
+            Observation padding (episode start) is automatic: when a window extends
+            before the start of an episode, obs keys are pre-padded by repeating the
+            first real frame. Non-obs keys (e.g. action) are left as zeros since
+            there is no meaningful prior value to repeat.
+            Post-padding (episode end) repeats the last real frame for all keys,
+            equivalent to SequenceSampler's action_padding=True behavior.
         """
         assert sequence_length >= 1
         if keys is None:
@@ -161,15 +169,26 @@ class ImprovedDatasetSampler:
                     pdb.set_trace()
             data = sample
             if (sample_start_idx > 0) or (sample_end_idx < self.sequence_length):
+                # Padding is needed: sample is shorter than sequence_length because
+                # this window extends before the episode start (sample_start_idx > 0)
+                # or past the episode end (sample_end_idx < sequence_length).
                 data = np.zeros(
                     shape=(self.sequence_length,) + input_arr.shape[1:],
                     dtype=input_arr.dtype,
                 )
-                if sample_start_idx > 0:
+                if sample_start_idx > 0 and key in self.obs_dict_keys:
+                    # Pre-pad: repeat the first real frame into the leading slots.
+                    # Only done for obs keys — action/other keys are left as zeros
+                    # since there is no meaningful "prior" value to repeat.
                     data[:sample_start_idx] = sample[0]
                 if sample_end_idx < self.sequence_length:
+                    # Post-pad: repeat the last real frame into the trailing slots.
+                    # Applied to all keys so the policy sees a plausible final state.
                     data[sample_end_idx:] = sample[-1]
                 data[sample_start_idx:sample_end_idx] = sample
+            # Route sampled data into the output datagram.
+            # RGB obs keys are kept as uint8 (compressed zarr stays on disk until
+            # sliced here); all other obs keys are cast to float32.
             if key == "state":
                 datagram["obs"]["agent_pos"] = data.astype(np.float32)
             elif key in self.rgb_keys:
