@@ -8,7 +8,7 @@
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=20
 #SBATCH --mem=256G
-#SBATCH --time=96:00:00
+#SBATCH --time=168:00:00
 #SBATCH --output=logs/slurm-%j.out
 #SBATCH --error=logs/slurm-%j.err
 #SBATCH --requeue
@@ -106,6 +106,13 @@ EXPERIMENT_CLASS=furniture_bench
 # EXPERIMENT_NAME=16_obs_one_leg_teleop_r3m_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=20_obs_one_leg_teleop_r3m_double_enc  # batch size 64, LR 1e-4
 
+# EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m_cross_attn_double_enc_scripted_non_markovian_1000_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=4_obs_one_leg_teleop_r3m_double_enc_scripted_non_markovian_1000_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=8_obs_one_leg_teleop_r3m_double_enc_scripted_non_markovian_1000_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=12_obs_one_leg_teleop_r3m_double_enc_scripted_non_markovian_1000_eps  # batch size 64, LR 1e-4
+EXPERIMENT_NAME=16_obs_one_leg_teleop_r3m_double_enc_scripted_non_markovian_1000_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=20_obs_one_leg_teleop_r3m_double_enc_scripted_non_markovian_1000_eps  # batch size 64, LR 1e-4
+
 # EXPERIMENT_NAME=lowdim_2_obs_one_leg_scripted_r3m  # batch size 64, LR 1e-4
 
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_100_eps  # batch size 64, LR 1e-4
@@ -119,6 +126,7 @@ EXPERIMENT_CLASS=furniture_bench
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_25_200_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_5_200_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_75_200_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_1_0_200_eps  # batch size 64, LR 1e-4
 
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_400_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_03125_400_eps  # batch size 64, LR 1e-4
@@ -127,10 +135,24 @@ EXPERIMENT_CLASS=furniture_bench
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_25_400_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_5_400_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_75_400_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_1_0_400_eps  # batch size 64, LR 1e-4
 
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_dart_0_200_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_dart_0_0625_200_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_dart_0_125_200_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_dart_0_25_200_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_dart_0_5_200_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_dart_1_0_200_eps  # batch size 64, LR 1e-4
+
+# --- Robomimic ---
+# EXPERIMENT_CLASS=robomimic
+# EXPERIMENT_NAME=2_obs_tool_hang_film  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_tool_hang_double_enc  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=4_obs_tool_hang_double_enc  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=8_obs_tool_hang_double_enc  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=12_obs_tool_hang_double_enc  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=16_obs_tool_hang_double_enc  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=20_obs_tool_hang_double_enc  # batch size 64, LR 1e-4
 
 # --- Experiment Configuration ---
 CONFIG_DIR=config/${EXPERIMENT_CLASS}
