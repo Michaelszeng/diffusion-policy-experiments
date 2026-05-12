@@ -112,13 +112,44 @@ class BaseZarrLowdimDataset(BaseLowdimDataset):
 
         for i, cfg in enumerate(zarr_configs):
             zarr_path = os.path.expanduser(cfg["path"])
-            buf = ReplayBuffer.copy_from_path(zarr_path=zarr_path, store=zarr.MemoryStore(), keys=keys)
-            train_mask, val_mask = self._build_episode_masks(
-                n_episodes=buf.n_episodes,
-                val_ratio=cfg.get("val_ratio", val_ratio),
-                max_train_episodes=cfg.get("max_train_episodes", None),
-                seed=seed,
-            )
+            max_train_episodes = cfg.get("max_train_episodes", None)
+            cfg_val_ratio = cfg.get("val_ratio", val_ratio)
+
+            buf = None
+            train_mask = None
+            val_mask = None
+            if max_train_episodes is not None:
+                # Read meta/episode_ends first so we can copy only kept episodes,
+                # avoiding loading the full dataset into memory.
+                src_group = zarr.open(zarr_path, mode="r")
+                src_episode_ends = src_group["meta"]["episode_ends"][:]
+                n_episodes_src = len(src_episode_ends)
+                train_mask_src, val_mask_src = self._build_episode_masks(
+                    n_episodes=n_episodes_src,
+                    val_ratio=cfg_val_ratio,
+                    max_train_episodes=max_train_episodes,
+                    seed=seed,
+                )
+                keep_mask_src = train_mask_src | val_mask_src
+                if not keep_mask_src.all():
+                    buf = ReplayBuffer.copy_selected_episodes_from_path(
+                        zarr_path=zarr_path,
+                        keep_mask=keep_mask_src,
+                        keys=keys,
+                        store=zarr.MemoryStore(),
+                    )
+                    train_mask = train_mask_src[keep_mask_src]
+                    val_mask = val_mask_src[keep_mask_src]
+
+            if buf is None:
+                buf = ReplayBuffer.copy_from_path(zarr_path=zarr_path, store=zarr.MemoryStore(), keys=keys)
+                train_mask, val_mask = self._build_episode_masks(
+                    n_episodes=buf.n_episodes,
+                    val_ratio=cfg_val_ratio,
+                    max_train_episodes=max_train_episodes,
+                    seed=seed,
+                )
+
             self.replay_buffers.append(buf)
             self.zarr_paths.append(zarr_path)
             self.train_masks.append(train_mask)
@@ -457,12 +488,12 @@ class BaseZarrImageDataset(BaseImageDataset):
 
         for i, cfg in enumerate(zarr_configs):
             zarr_path = os.path.expanduser(cfg["path"])
-            buf = self.load_replay_buffer(zarr_path, keys, cfg)
-            train_mask, val_mask = self._build_episode_masks(
-                n_episodes=buf.n_episodes,
-                val_ratio=cfg.get("val_ratio", val_ratio),
-                max_train_episodes=cfg.get("max_train_episodes", None),
+            buf, train_mask, val_mask = self._load_buffer_and_masks(
+                zarr_path=zarr_path,
+                keys=keys,
+                cfg=cfg,
                 seed=seed,
+                default_val_ratio=val_ratio,
             )
             self.replay_buffers.append(buf)
             self.zarr_paths.append(zarr_path)
@@ -489,6 +520,68 @@ class BaseZarrImageDataset(BaseImageDataset):
     def _get_buffer_keys(self) -> List[str]:
         """Return the list of keys to load from the zarr store."""
         raise NotImplementedError()
+
+    def _load_buffer_and_masks(
+        self,
+        zarr_path: str,
+        keys: List[str],
+        cfg: Dict,
+        seed: int,
+        default_val_ratio: float,
+    ) -> Tuple[ReplayBuffer, np.ndarray, np.ndarray]:
+        """
+        Load a ReplayBuffer and produce train/val masks for it.
+
+        When the subclass uses the default zarr loader and ``max_train_episodes`` would
+        drop a non-trivial fraction of episodes, this reads ``meta/episode_ends`` from
+        the source first, computes the train/val/keep masks, and loads only the kept
+        episodes via ``ReplayBuffer.copy_selected_episodes_from_path``. The returned
+        masks are remapped to the new compact episode indexing.
+
+        Otherwise (full-dataset case, or subclass with a custom ``load_replay_buffer``)
+        it falls back to the existing flow: load everything, then compute masks against
+        the loaded buffer's ``n_episodes``.
+        """
+        uses_default_loader = (
+            type(self).load_replay_buffer is BaseZarrImageDataset.load_replay_buffer
+        )
+        max_train_episodes = cfg.get("max_train_episodes", None)
+        cfg_val_ratio = cfg.get("val_ratio", default_val_ratio)
+
+        if uses_default_loader and max_train_episodes is not None:
+            # Read meta/episode_ends without loading any data arrays, so we can decide
+            # which episodes to copy before paying any NFS bandwidth on the big arrays.
+            src_group = zarr.open(zarr_path, mode="r")
+            src_episode_ends = src_group["meta"]["episode_ends"][:]
+            n_episodes_src = len(src_episode_ends)
+            train_mask_src, val_mask_src = self._build_episode_masks(
+                n_episodes=n_episodes_src,
+                val_ratio=cfg_val_ratio,
+                max_train_episodes=max_train_episodes,
+                seed=seed,
+            )
+            keep_mask_src = train_mask_src | val_mask_src
+            if not keep_mask_src.all():
+                buf = ReplayBuffer.copy_selected_episodes_from_path(
+                    zarr_path=zarr_path,
+                    keep_mask=keep_mask_src,
+                    keys=keys,
+                    store=zarr.MemoryStore(),
+                )
+                # Remap masks to the new compact indexing (kept episodes preserve order).
+                train_mask = train_mask_src[keep_mask_src]
+                val_mask = val_mask_src[keep_mask_src]
+                return buf, train_mask, val_mask
+
+        # Fall-through: full load, then build masks against the loaded buffer.
+        buf = self.load_replay_buffer(zarr_path, keys, cfg)
+        train_mask, val_mask = self._build_episode_masks(
+            n_episodes=buf.n_episodes,
+            val_ratio=cfg_val_ratio,
+            max_train_episodes=max_train_episodes,
+            seed=seed,
+        )
+        return buf, train_mask, val_mask
 
     def load_replay_buffer(self, path: str, keys: List[str], config: Dict) -> ReplayBuffer:
         """Load a standard zarr store (data/meta layout) into memory as a ReplayBuffer."""

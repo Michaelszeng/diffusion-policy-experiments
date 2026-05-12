@@ -110,7 +110,7 @@ task:
     - path: ../benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/scripted/low/success_translated.zarr
       max_train_episodes: 190
       sampling_weight: null
-      val_ratio: 0.05
+      val_ratio: 0.01
   name: furniture_bench
   shape_meta: ${shape_meta}
 task_name: furniture_bench

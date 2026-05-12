@@ -108,9 +108,9 @@ task:
     seed: ${seed}
     zarr_configs:
     - path: ../benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/scripted_non_markovian/low/success_translated.zarr
-      max_train_episodes: null
+      max_train_episodes: 380
       sampling_weight: null
-      val_ratio: 0.05
+      val_ratio: 0.01
   name: furniture_bench
   shape_meta: ${shape_meta}
 task_name: furniture_bench

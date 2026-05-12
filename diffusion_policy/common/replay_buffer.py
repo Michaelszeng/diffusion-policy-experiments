@@ -257,6 +257,107 @@ class ReplayBuffer:
             **kwargs,
         )
 
+    @classmethod
+    def copy_selected_episodes_from_path(
+        cls,
+        zarr_path,
+        keep_mask: np.ndarray,
+        keys=None,
+        store=None,
+    ):
+        """
+        Copy only selected episodes from an on-disk zarr into an in-memory ReplayBuffer.
+
+        Reads only the frame ranges belonging to the kept episodes, so both NFS read
+        volume and resident memory scale with the number of kept episodes rather than
+        the full dataset. The new buffer is contiguous: kept episodes are concatenated
+        in their original order, and ``meta/episode_ends`` is rebuilt accordingly.
+
+        Args:
+            zarr_path: Path to a source zarr store with the standard data/meta layout.
+            keep_mask: Boolean array of length ``n_episodes`` selecting episodes to copy.
+            keys: Data keys to copy. If None, copies all keys under ``data/``.
+            store: Destination zarr store. Defaults to ``zarr.MemoryStore()``.
+
+        Returns:
+            A ReplayBuffer wrapping the new in-memory zarr group.
+
+        Notes:
+            Source chunks straddling kept/unkept boundaries are read in full and then
+            sliced (zarr decompresses on read, recompresses on write). This costs a
+            small amount of CPU at load time but is paid once.
+        """
+        src_group = zarr.open(os.path.expanduser(zarr_path), mode="r")
+        src_episode_ends = src_group["meta"]["episode_ends"][:]
+        n_episodes = len(src_episode_ends)
+
+        keep_mask = np.asarray(keep_mask)
+        assert keep_mask.shape == (n_episodes,), (
+            f"keep_mask shape {keep_mask.shape} does not match n_episodes ({n_episodes},)"
+        )
+        assert keep_mask.dtype == bool, f"keep_mask must be bool, got {keep_mask.dtype}"
+
+        if keys is None:
+            keys = list(src_group["data"].keys())
+
+        src_episode_starts = np.concatenate([[0], src_episode_ends[:-1]]).astype(np.int64)
+        kept_episode_idxs = np.flatnonzero(keep_mask)
+        src_ranges = [
+            (int(src_episode_starts[i]), int(src_episode_ends[i])) for i in kept_episode_idxs
+        ]
+        kept_lengths = np.array([end - start for start, end in src_ranges], dtype=np.int64)
+        new_episode_ends = (
+            np.cumsum(kept_lengths).astype(np.int64) if len(kept_lengths) > 0
+            else np.zeros((0,), dtype=np.int64)
+        )
+        total_kept_frames = int(new_episode_ends[-1]) if len(new_episode_ends) > 0 else 0
+        total_src_frames = int(src_episode_ends[-1]) if n_episodes > 0 else 0
+
+        print(
+            f"Storing dataset in memory with zarr backend (selective): keeping "
+            f"{int(keep_mask.sum())}/{n_episodes} episodes, "
+            f"{total_kept_frames}/{total_src_frames} frames"
+        )
+
+        if store is None:
+            store = zarr.MemoryStore()
+        root = zarr.group(store=store)
+
+        meta_group = root.create_group("meta", overwrite=True)
+        meta_group.array(
+            name="episode_ends",
+            data=new_episode_ends,
+            shape=new_episode_ends.shape,
+            chunks=new_episode_ends.shape if new_episode_ends.size > 0 else (1,),
+            dtype=np.int64,
+            compressor=None,
+            overwrite=True,
+        )
+
+        data_group = root.create_group("data", overwrite=True)
+        for key in keys:
+            src_arr = src_group["data"][key]
+            new_shape = (total_kept_frames,) + src_arr.shape[1:]
+            # Preserve source chunks; clamp time-chunk to total length so zarr is happy.
+            src_chunks = src_arr.chunks
+            time_chunk = min(src_chunks[0], max(total_kept_frames, 1))
+            new_chunks = (time_chunk,) + src_chunks[1:]
+            new_arr = data_group.create_dataset(
+                name=key,
+                shape=new_shape,
+                chunks=new_chunks,
+                dtype=src_arr.dtype,
+                compressor=src_arr.compressor,
+                overwrite=True,
+            )
+            cursor = 0
+            for start, end in src_ranges:
+                length = end - start
+                new_arr[cursor:cursor + length] = src_arr[start:end]
+                cursor += length
+
+        return cls(root=root)
+
     # ============= save methods ===============
     def save_to_store(
         self,

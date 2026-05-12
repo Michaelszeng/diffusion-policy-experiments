@@ -108,7 +108,7 @@ EXPERIMENT_CLASS=furniture_bench
 
 # EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m_cross_attn_double_enc_scripted_non_markovian_1000_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=4_obs_one_leg_teleop_r3m_double_enc_scripted_non_markovian_1000_eps  # batch size 64, LR 1e-4
-EXPERIMENT_NAME=8_obs_one_leg_teleop_r3m_double_enc_scripted_non_markovian_1000_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=8_obs_one_leg_teleop_r3m_double_enc_scripted_non_markovian_1000_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=12_obs_one_leg_teleop_r3m_double_enc_scripted_non_markovian_1000_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=16_obs_one_leg_teleop_r3m_double_enc_scripted_non_markovian_1000_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=20_obs_one_leg_teleop_r3m_double_enc_scripted_non_markovian_1000_eps  # batch size 64, LR 1e-4
@@ -118,6 +118,7 @@ EXPERIMENT_NAME=8_obs_one_leg_teleop_r3m_double_enc_scripted_non_markovian_1000_
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_100_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_200_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_400_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_1000_eps  # batch size 64, LR 1e-4
 
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_200_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_03125_200_eps  # batch size 64, LR 1e-4
@@ -179,27 +180,9 @@ if [ "$USE_TORCH_COMPILE" = "true" ]; then
     COMPILE_ARGS="training.use_torch_compile=true training.torch_compile_mode=$TORCH_COMPILE_MODE +dataloader.drop_last=true"
 fi
 
-# Pin job to one NUMA node
-GPU_BUS=$(nvidia-smi --query-gpu=pci.bus_id --format=csv,noheader | head -1 | sed 's/^00000000://')
-GPU_NUMA=$(cat /sys/bus/pci/devices/0000:${GPU_BUS,,}/numa_node)
-if [ "$GPU_NUMA" = "0" ]; then
-    NUMA_CPUS=$(cat /sys/devices/system/node/node0/cpulist)
-else
-    NUMA_CPUS=$(cat /sys/devices/system/node/node1/cpulist)
-fi
-echo "Pinning to NUMA $GPU_NUMA, CPUs: $NUMA_CPUS"
-# Verify taskset can actually apply this CPU mask before committing to it.
-# On some kernels the cpulist from sysfs can include CPU IDs that exceed the
-# kernel's NR_CPUS limit, causing sched_setaffinity to return EINVAL.
-TASKSET_PREFIX=""
-if taskset -c "$NUMA_CPUS" true 2>/dev/null; then
-    TASKSET_PREFIX="taskset -c $NUMA_CPUS"
-else
-    echo "WARNING: taskset failed for CPUs '$NUMA_CPUS' (Invalid argument or CPU out of range). Running without NUMA pinning." >&2
-fi
 
 if [ -z "$CHECKPOINT_PATH" ] || [ "$CHECKPOINT_PATH" == "null" ]; then
-    exec $TASKSET_PREFIX python train.py \
+    exec python train.py \
         --config-dir=$CONFIG_DIR \
         --config-name=$CONFIG_NAME \
         hydra.run.dir=$HYDRA_RUN_DIR \
@@ -210,7 +193,7 @@ if [ -z "$CHECKPOINT_PATH" ] || [ "$CHECKPOINT_PATH" == "null" ]; then
         training.mixed_precision=bf16 \
         $COMPILE_ARGS
 else
-    exec $TASKSET_PREFIX python train.py \
+    exec python train.py \
         --config-dir=$CONFIG_DIR \
         --config-name=$CONFIG_NAME \
         hydra.run.dir=$HYDRA_RUN_DIR \
