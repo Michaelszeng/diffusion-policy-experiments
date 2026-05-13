@@ -1,6 +1,7 @@
-from typing import Dict
+from typing import Dict, Optional
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from diffusers.schedulers.scheduling_ddim import DDIMScheduler
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
@@ -42,6 +43,9 @@ class DiffusionUnetTimmAttentionPolicy(BaseImagePolicy):
         use_modality_emb=True,
         use_range_emb=True,
         input_pertub=0.1,
+        short_range_encoder: Optional[TimmObsEncoder] = None,
+        short_range_obs_horizon: Optional[int] = None,
+        short_range_dropout: float = 0.0,
         **kwargs,
     ):
         super().__init__()
@@ -49,6 +53,19 @@ class DiffusionUnetTimmAttentionPolicy(BaseImagePolicy):
         action_shape = shape_meta["action"]["shape"]
         assert len(action_shape) == 1
         action_dim = action_shape[0]
+        n_obs_steps = obs_encoder.n_obs_steps
+
+        if short_range_obs_horizon is not None:
+            assert isinstance(short_range_obs_horizon, int) and short_range_obs_horizon >= 0, \
+                f"short_range_obs_horizon must be a non-negative integer, got {short_range_obs_horizon}"
+            assert short_range_obs_horizon <= n_obs_steps, \
+                f"short_range_obs_horizon ({short_range_obs_horizon}) must be less than or equal to n_obs_steps ({n_obs_steps})"
+            assert 0.0 <= short_range_dropout <= 1.0, \
+                f"short_range_dropout must be in [0, 1], got {short_range_dropout}"
+            assert short_range_encoder is not None, \
+                "short_range_encoder must be provided when short_range_obs_horizon is not None"
+            assert short_range_encoder.output_shape() == obs_encoder.output_shape(), \
+                f"short_range_encoder output shape {short_range_encoder.output_shape()} must match obs_encoder {obs_encoder.output_shape()}"
 
         self.model = StaticAttentionConditionalUnet1D(
             input_dim=action_dim,
@@ -78,6 +95,12 @@ class DiffusionUnetTimmAttentionPolicy(BaseImagePolicy):
         ddim_scheduler.set_timesteps(num_ddim_inference_steps)
 
         self.obs_encoder = obs_encoder
+        self.short_range_encoder = short_range_encoder
+        self.short_range_obs_horizon = short_range_obs_horizon
+        self.short_range_dropout = short_range_dropout
+        if short_range_obs_horizon is not None:
+            # Learned replacement token used when short-range tokens are dropped during training.
+            self.short_range_null_token = nn.Parameter(torch.zeros(1, obs_encoder.feature_dim))
         self.noise_scheduler = noise_scheduler
         self.ddim_noise_scheduler = ddim_scheduler
         self.normalizer = LinearNormalizer()
@@ -92,9 +115,55 @@ class DiffusionUnetTimmAttentionPolicy(BaseImagePolicy):
         self.num_ddim_inference_steps = num_ddim_inference_steps
 
     def _encode_obs(self, nobs: Dict[str, torch.Tensor]):
-        """Returns tokens, positions, modalities, ranges from the obs encoder (dit mode)."""
-        enc = self.obs_encoder(nobs, output_format="dit")
-        return enc["tokens"], enc["positions"], enc["modality"], enc["range"]
+        """Returns tokens, positions, modalities, ranges from the obs encoder (dit mode).
+
+        With single encoder: all tokens carry range=LONG.
+        With dual encoder (short_range_obs_horizon is not None): the full n_obs_steps window
+        is encoded by ``obs_encoder`` (LONG-range tokens), and the most recent
+        ``short_range_obs_horizon`` frames are ALSO encoded by ``short_range_encoder``
+        (SHORT-range tokens). During training, the entire short-range token block is
+        replaced per-sample with a learned null token with probability ``short_range_dropout``.
+        """
+        long_enc = self.obs_encoder(nobs, output_format="dit")
+        long_tokens = long_enc["tokens"]
+        long_positions = long_enc["positions"]
+        long_modalities = long_enc["modality"]
+        long_ranges = long_enc["range"]
+
+        if self.short_range_obs_horizon is None:
+            return long_tokens, long_positions, long_modalities, long_ranges
+
+        To = self.obs_encoder.n_obs_steps
+        To_short = self.short_range_obs_horizon
+        # Pre-slice each key to the most recent To_short frames so the short-range encoder
+        # (configured with n_obs_steps=To_short) encodes the correct window.
+        short_nobs = {k: v[:, To - To_short:To, ...] for k, v in nobs.items()}
+        short_enc = self.short_range_encoder(short_nobs, output_format="dit")
+
+        short_tokens = short_enc["tokens"]
+        # The short-range encoder emits positions 0..To_short-1 (its local window); shift
+        # them to align with the original n_obs_steps timeline.
+        short_positions = short_enc["positions"] + (To - To_short)
+        short_modalities = short_enc["modality"]
+        short_ranges = torch.full_like(short_enc["range"], 2)  # 0=null/timestep, 1=LONG, 2=SHORT
+
+        # Per-sample short-range dropout: replace this sample's short-range block with the
+        # learned null token to teach the policy to function without short-range context.
+        if self.training and self.short_range_dropout > 0.0:
+            B = short_tokens.shape[0]
+            device = short_tokens.device
+            drop_mask = torch.bernoulli(
+                torch.full((B,), self.short_range_dropout, device=device)
+            ).bool()
+            if drop_mask.any():
+                null = self.short_range_null_token.view(1, 1, -1).expand_as(short_tokens)
+                short_tokens = torch.where(drop_mask.view(B, 1, 1), null, short_tokens)
+
+        tokens = torch.cat([long_tokens, short_tokens], dim=1)
+        positions = torch.cat([long_positions, short_positions], dim=1)
+        modalities = torch.cat([long_modalities, short_modalities], dim=1)
+        ranges = torch.cat([long_ranges, short_ranges], dim=1)
+        return tokens, positions, modalities, ranges
 
     # ── Inference ──────────────────────────────────────────────────────────────
 

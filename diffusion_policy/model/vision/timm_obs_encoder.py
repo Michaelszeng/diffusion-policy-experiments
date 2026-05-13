@@ -170,6 +170,10 @@ class TimmObsEncoder(ModuleAttrMixin):
         """Flat output dimension for output_format='cat'."""
         return (len(self.rgb_keys) + len(self.low_dim_keys)) * self.n_obs_steps * self.feature_dim
 
+    def output_shape(self):
+        """Per-token feature shape — compatible with the robomimic/R3M obs_encoder interface."""
+        return (self.feature_dim,)
+
     def forward(
         self,
         obs_dict: Dict[str, torch.Tensor],

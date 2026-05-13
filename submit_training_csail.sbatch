@@ -67,8 +67,8 @@ export HYDRA_FULL_ERROR=1
 
 # --- Mundane ---
 EXPERIMENT_CLASS=mundane
-EXPERIMENT_NAME=2_obs_pill_CLIP_film  # batch size 64, LR 1e-4, 2-GPU
-# EXPERIMENT_NAME=8_obs_pill_CLIP_attention  # batch size 64, LR 1e-4, 2-GPU
+# EXPERIMENT_NAME=2_obs_pill_CLIP_film  # batch size 64, LR 1e-4, 2-GPU
+EXPERIMENT_NAME=8_obs_pill_CLIP_attention_double_enc  # batch size 64, LR 1e-4, 2-GPU
 
 # --- Planar Pushing ---
 # EXPERIMENT_CLASS=planar_pushing
@@ -190,15 +190,8 @@ if [ "$USE_TORCH_COMPILE" = "true" ]; then
     COMPILE_ARGS="training.use_torch_compile=true training.torch_compile_mode=$TORCH_COMPILE_MODE +dataloader.drop_last=true"
 fi
 
-NUM_GPUS=${SLURM_GPUS_ON_NODE:-1}
-if [ "$NUM_GPUS" -gt 1 ]; then
-    ACCELERATE_ARGS="--num_processes=$NUM_GPUS --multi_gpu --mixed_precision=bf16 --gpu_ids=all"
-else
-    ACCELERATE_ARGS="--num_processes=$NUM_GPUS --mixed_precision=bf16 --gpu_ids=all"
-fi
-
 if [ -z "$CHECKPOINT_PATH" ] || [ "$CHECKPOINT_PATH" == "null" ]; then
-    exec accelerate launch $ACCELERATE_ARGS train.py \
+    exec python train.py \
         --config-dir=$CONFIG_DIR \
         --config-name=$CONFIG_NAME \
         hydra.run.dir=$HYDRA_RUN_DIR \
@@ -209,7 +202,7 @@ if [ -z "$CHECKPOINT_PATH" ] || [ "$CHECKPOINT_PATH" == "null" ]; then
         training.mixed_precision=bf16 \
         $COMPILE_ARGS
 else
-    exec accelerate launch $ACCELERATE_ARGS train.py \
+    exec python train.py \
         --config-dir=$CONFIG_DIR \
         --config-name=$CONFIG_NAME \
         hydra.run.dir=$HYDRA_RUN_DIR \

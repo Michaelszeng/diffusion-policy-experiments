@@ -80,6 +80,10 @@ class TrainDiffusionUnetTimmWorkspaceNoEnv(BaseWorkspace):
                 f"rest = {cfg.optimizer.lr:.6f}"
             )
             encoder_params = list(self.model.obs_encoder.parameters())
+            # Include short_range_encoder params (dual-encoder configurations) in the same LR group.
+            short_range_encoder = getattr(self.model, "short_range_encoder", None)
+            if short_range_encoder is not None:
+                encoder_params += list(short_range_encoder.parameters())
             encoder_param_ids = {id(p) for p in encoder_params}
             other_params = [p for p in self.model.parameters() if id(p) not in encoder_param_ids]
             optimizer_class = getattr(optim, cfg.optimizer._target_.split(".")[-1])
