@@ -25,12 +25,9 @@ import tqdm
 from omegaconf import ListConfig, OmegaConf
 from accelerate import Accelerator
 from accelerate.utils import DistributedDataParallelKwargs
-from torch.utils.data import DataLoader
-from torch.utils.data.distributed import DistributedSampler
-
 from diffusion_policy.common.checkpoint_util import TopKCheckpointManager
 from diffusion_policy.common.json_logger import JsonLogger
-from diffusion_policy.common.pytorch_util import dict_apply
+from diffusion_policy.common.pytorch_util import dict_apply, make_distributed_dataloader
 from diffusion_policy.dataset.base_dataset import BaseLowdimDataset
 from diffusion_policy.model.common.lr_scheduler import get_scheduler
 from diffusion_policy.model.diffusion.ema_model import EMAModel
@@ -74,7 +71,7 @@ class TrainDiffusionUnetLowdimWorkspaceNoEnv(BaseWorkspace):
         mixed_precision = getattr(cfg.training, "mixed_precision", None) or "no"
 
         # Accelerator replaces: DataParallel, GradScaler, autocast, and wandb.init.
-        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
+        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
         accelerator = Accelerator(
             log_with="wandb",
             mixed_precision=mixed_precision,
@@ -117,24 +114,16 @@ class TrainDiffusionUnetLowdimWorkspaceNoEnv(BaseWorkspace):
         dataset: BaseLowdimDataset = hydra.utils.instantiate(cfg.task.dataset)
         assert isinstance(dataset, BaseLowdimDataset)
 
-        # Create training dataloader.
-        # For multi-GPU: use DistributedSampler so each process sees a disjoint shard.
-        # For single-GPU: use the regular dataloader config directly.
-        dataloader_cfg = OmegaConf.to_container(cfg.dataloader, resolve=True)
-        if accelerator.num_processes > 1:
-            shuffle = dataloader_cfg.pop("shuffle", True)
-            drop_last = dataloader_cfg.pop("drop_last", True)
-            train_sampler = DistributedSampler(
-                dataset,
-                num_replicas=accelerator.num_processes,
-                rank=accelerator.process_index,
-                shuffle=shuffle,
-                seed=cfg.training.seed,
-            )
-            train_dataloader = DataLoader(dataset, sampler=train_sampler, drop_last=drop_last, **dataloader_cfg)
-        else:
-            train_sampler = None
-            train_dataloader = DataLoader(dataset, **cfg.dataloader)
+        # `cfg.dataloader.batch_size` and `cfg.val_dataloader.batch_size` are GLOBAL batch sizes
+        # summed across all GPUs; each process uses `batch_size // num_processes` per-device.
+        n_gpus, rank, seed = accelerator.num_processes, accelerator.process_index, cfg.training.seed
+        accelerator.print(
+            f"Training batch size: global={cfg.dataloader.batch_size}, "
+            f"per-device={cfg.dataloader.batch_size // n_gpus} ({n_gpus} GPU(s))"
+        )
+        train_dataloader, train_sampler = make_distributed_dataloader(
+            dataset, OmegaConf.to_container(cfg.dataloader, resolve=True), n_gpus, rank, seed
+        )
 
         # Compute normalizer on the main process and save to disk, then all processes load it.
         normalizer_path = os.path.join(self.output_dir, "normalizer.pt")
@@ -144,9 +133,12 @@ class TrainDiffusionUnetLowdimWorkspaceNoEnv(BaseWorkspace):
         accelerator.wait_for_everyone()
         normalizer = torch.load(normalizer_path)
 
-        # configure validation dataset
+        # Configure validation dataset (sharded across GPUs; metrics gathered in val loop).
         val_dataset = dataset.get_validation_dataset()
-        val_dataloader = DataLoader(val_dataset, **cfg.val_dataloader)
+        val_dataloader, _ = make_distributed_dataloader(
+            val_dataset, OmegaConf.to_container(cfg.val_dataloader, resolve=True), n_gpus, rank, seed,
+            shuffle_default=False, drop_last_default=False,
+        )
 
         if accelerator.is_main_process:
             self._print_dataset_diagnostics(cfg, dataset, train_dataloader, val_dataloader)
@@ -370,7 +362,9 @@ class TrainDiffusionUnetLowdimWorkspaceNoEnv(BaseWorkspace):
                                 ):
                                     break
                         if len(val_losses) > 0:
-                            step_log["val_loss"] = np.mean(val_losses)
+                            # Gather per-batch losses across all GPUs to compute global val loss
+                            local_t = torch.tensor(val_losses, device=device)
+                            step_log["val_loss"] = accelerator.gather(local_t).mean().item()
 
                 # ── DDPM/DDIM clean action MSE validation ────────────────────────
                 if (self.epoch % cfg.training.sample_every) == 0 and cfg.training.log_val_mse:
@@ -384,15 +378,17 @@ class TrainDiffusionUnetLowdimWorkspaceNoEnv(BaseWorkspace):
                             val_obs_dict["target"] = val_batch["target"]
                         val_gt_action = val_batch["action"]
 
+                        # Each rank evaluates MSE on its own val_sampling_batch shard;
+                        # we gather the scalar MSEs across ranks for the global mean.
                         if cfg.training.eval_mse_DDPM:
                             result = eval_policy.predict_action(val_obs_dict, use_DDIM=False)
                             mse = torch.nn.functional.mse_loss(result["action_pred"], val_gt_action)
-                            step_log["val_ddpm_mse"] = mse.item()
+                            step_log["val_ddpm_mse"] = accelerator.gather(mse.detach().unsqueeze(0)).mean().item()
 
                         if cfg.training.eval_mse_DDIM:
                             result = eval_policy.predict_action(val_obs_dict, use_DDIM=True)
                             mse = torch.nn.functional.mse_loss(result["action_pred"], val_gt_action)
-                            step_log["val_ddim_mse"] = mse.item()
+                            step_log["val_ddim_mse"] = accelerator.gather(mse.detach().unsqueeze(0)).mean().item()
 
                 # ── Checkpointing (main process only) ────────────────────────────
                 if (self.epoch % cfg.training.checkpoint_every) == 0 and accelerator.is_main_process:
@@ -458,8 +454,6 @@ class TrainDiffusionUnetLowdimWorkspaceNoEnv(BaseWorkspace):
         print(f"Number of validation demonstrations: {np.sum(dataset.val_masks[0])}")
         print(f"Number of training samples: {len(dataset.samplers[0])}")
         print(f"Number of validation samples: {len(val_dataset)}")
-        print(f"Approx. number of training batches: {len(dataset.samplers[0]) // cfg.dataloader.batch_size}")
-        print(f"Approx. number of validation batches: {len(val_dataset) // cfg.val_dataloader.batch_size}")
         print()
         print("================================================")
 

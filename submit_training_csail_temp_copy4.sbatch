@@ -108,7 +108,7 @@ EXPERIMENT_CLASS=furniture_bench
 
 # EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m_cross_attn_double_enc_scripted_non_markovian_1000_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=4_obs_one_leg_teleop_r3m_double_enc_scripted_non_markovian_1000_eps  # batch size 64, LR 1e-4
-EXPERIMENT_NAME=8_obs_one_leg_teleop_r3m_double_enc_scripted_non_markovian_1000_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=8_obs_one_leg_teleop_r3m_double_enc_scripted_non_markovian_1000_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=12_obs_one_leg_teleop_r3m_double_enc_scripted_non_markovian_1000_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=16_obs_one_leg_teleop_r3m_double_enc_scripted_non_markovian_1000_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=20_obs_one_leg_teleop_r3m_double_enc_scripted_non_markovian_1000_eps  # batch size 64, LR 1e-4
@@ -121,7 +121,7 @@ EXPERIMENT_NAME=8_obs_one_leg_teleop_r3m_double_enc_scripted_non_markovian_1000_
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_1000_eps  # batch size 64, LR 1e-4
 
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_100_eps  # batch size 64, LR 1e-4
-# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_200_eps  # batch size 64, LR 1e-4
+EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_200_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_400_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_1000_eps  # batch size 64, LR 1e-4
 

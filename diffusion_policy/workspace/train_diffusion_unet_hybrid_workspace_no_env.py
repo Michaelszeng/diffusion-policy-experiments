@@ -21,12 +21,9 @@ import torch.optim as optim
 from accelerate import Accelerator
 from accelerate.utils import DistributedDataParallelKwargs
 from omegaconf import ListConfig, OmegaConf
-from torch.utils.data import DataLoader
-from torch.utils.data.distributed import DistributedSampler
-
 from diffusion_policy.common.checkpoint_util import TopKCheckpointManager
 from diffusion_policy.common.json_logger import JsonLogger
-from diffusion_policy.common.pytorch_util import dict_apply
+from diffusion_policy.common.pytorch_util import dict_apply, make_distributed_dataloader
 from diffusion_policy.dataset.base_dataset import BaseImageDataset
 from diffusion_policy.model.common.lr_scheduler import get_scheduler
 from diffusion_policy.model.diffusion.ema_model import EMAModel
@@ -108,7 +105,7 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
 
         # Accelerator replaces: DataParallel, GradScaler, autocast, and wandb.init.
         # find_unused_parameters=False is the safe default; set True only if needed.
-        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
+        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
         accelerator = Accelerator(
             log_with="wandb",
             mixed_precision=mixed_precision,
@@ -155,24 +152,16 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
         dataset: BaseImageDataset = hydra.utils.instantiate(cfg.task.dataset)
         assert isinstance(dataset, BaseImageDataset)
 
-        # Create training dataloader.
-        # For multi-GPU: use DistributedSampler so each process sees a disjoint shard.
-        # For single-GPU: use the regular dataloader config directly.
-        dataloader_cfg = OmegaConf.to_container(cfg.dataloader, resolve=True)
-        if accelerator.num_processes > 1:
-            shuffle = dataloader_cfg.pop("shuffle", True)
-            drop_last = dataloader_cfg.pop("drop_last", True)
-            train_sampler = DistributedSampler(
-                dataset,
-                num_replicas=accelerator.num_processes,
-                rank=accelerator.process_index,
-                shuffle=shuffle,
-                seed=cfg.training.seed,
-            )
-            train_dataloader = DataLoader(dataset, sampler=train_sampler, drop_last=drop_last, **dataloader_cfg)
-        else:
-            train_sampler = None
-            train_dataloader = DataLoader(dataset, **cfg.dataloader)
+        # `cfg.dataloader.batch_size` and `cfg.val_dataloader.batch_size` are GLOBAL batch sizes
+        # summed across all GPUs; each process uses `batch_size // num_processes` per-device.
+        n_gpus, rank, seed = accelerator.num_processes, accelerator.process_index, cfg.training.seed
+        accelerator.print(
+            f"Training batch size: global={cfg.dataloader.batch_size}, "
+            f"per-device={cfg.dataloader.batch_size // n_gpus} ({n_gpus} GPU(s))"
+        )
+        train_dataloader, train_sampler = make_distributed_dataloader(
+            dataset, OmegaConf.to_container(cfg.dataloader, resolve=True), n_gpus, rank, seed
+        )
 
         # Compute normalizer on the main process and save to disk, then all processes load it.
         # This avoids redundant computation and ensures all processes use the same normalizer.
@@ -183,13 +172,18 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
         accelerator.wait_for_everyone()
         normalizer = torch.load(normalizer_path)
 
-        # Configure validation datasets (not distributed — all processes see full val data)
+        # Configure validation datasets (sharded across GPUs; metrics gathered in val loop).
         self.num_datasets = dataset.get_num_datasets()
         self.sample_probabilities = dataset.get_sample_probabilities()
-        val_dataloaders = []
-        for i in range(self.num_datasets):
-            val_dataset = dataset.get_validation_dataset(i)
-            val_dataloaders.append(DataLoader(val_dataset, **cfg.val_dataloader))
+        val_dataloader_cfg = OmegaConf.to_container(cfg.val_dataloader, resolve=True)
+        # Per-validation dataset dataloader and metrics
+        val_dataloaders = [
+            make_distributed_dataloader(
+                dataset.get_validation_dataset(i), val_dataloader_cfg, n_gpus, rank, seed,
+                shuffle_default=False, drop_last_default=False,
+            )[0]
+            for i in range(self.num_datasets)
+        ]
         if accelerator.is_main_process:
             self._print_dataset_diagnostics(cfg, dataset, train_dataloader, val_dataloaders)
 
@@ -443,9 +437,10 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                             # End of validation loss computation loop
 
                             if len(val_losses) > 0:
-                                val_loss = np.mean(val_losses)
+                                # Gather per-batch losses across all GPUs to compute global val loss
+                                local_t = torch.tensor(val_losses, device=device)
+                                val_loss = accelerator.gather(local_t).mean().item()
                                 val_loss_per_dataset.append(val_loss)
-                                # Log epoch average validation loss
                                 step_log[f"val_loss_{dataset_idx}"] = val_loss
                         # End val_dataloader loop
 
@@ -471,21 +466,23 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                             val_obs_dict = {key: val_batch[key] for key in val_batch.keys() if key != "action"}
                             val_gt_action = val_batch["action"]
 
-                            # Evaluate MSE when diffusing with DDPM
+                            # Each rank evaluates MSE on its own val_sampling_batch shard;
+                            # we gather the scalar MSEs across ranks for the global mean.
                             if cfg.training.eval_mse_DDPM:
                                 result = eval_policy.predict_action(val_obs_dict, use_DDIM=False)
                                 pred_action = result["action_pred"]
                                 mse = torch.nn.functional.mse_loss(pred_action, val_gt_action)
-                                step_log[f"val_ddpm_mse_{dataset_idx}"] = mse.item()
-                                val_ddpm_action_mses.append(mse.item())
+                                mse_val = accelerator.gather(mse.detach().unsqueeze(0)).mean().item()
+                                step_log[f"val_ddpm_mse_{dataset_idx}"] = mse_val
+                                val_ddpm_action_mses.append(mse_val)
 
-                            # Evaluate MSE when diffusing with DDIM
                             if cfg.training.eval_mse_DDIM:
                                 result = eval_policy.predict_action(val_obs_dict, use_DDIM=True)
                                 pred_action = result["action_pred"]
                                 mse = torch.nn.functional.mse_loss(pred_action, val_gt_action)
-                                step_log[f"val_ddim_mse_{dataset_idx}"] = mse.item()
-                                val_ddim_action_mses.append(mse.item())
+                                mse_val = accelerator.gather(mse.detach().unsqueeze(0)).mean().item()
+                                step_log[f"val_ddim_mse_{dataset_idx}"] = mse_val
+                                val_ddim_action_mses.append(mse_val)
 
                         # Compute weighted val action MSEs
                         if cfg.training.eval_mse_DDPM and val_ddpm_action_mses:

@@ -195,6 +195,19 @@ class TimmObsEncoder(ModuleAttrMixin):
         device = next(self.parameters()).device
         B = next(iter(obs_dict.values())).shape[0]
 
+        # The dataset sampler returns the full sequence length per key (since
+        # `key_first_k` only changes how much real data is loaded, not the
+        # returned shape — trailing positions are NaN-filled placeholders).
+        # We are only responsible for encoding the n_obs_steps observation
+        # window; downstream frames must not be encoded since cat_output_dim
+        # is derived from n_obs_steps and the UNet's cond_dim is sized to match.
+        To = self.n_obs_steps
+        for key, v in obs_dict.items():
+            assert v.shape[1] >= To, (
+                f"obs_dict[{key!r}] has T={v.shape[1]} < n_obs_steps={To}"
+            )
+        obs_dict = {k: v[:, :To, ...] for k, v in obs_dict.items()}
+
         # Encode every key → (B, T_obs, feature_dim)
         encoded: Dict[str, torch.Tensor] = {}
         for key in self.rgb_keys:

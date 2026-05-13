@@ -34,10 +34,10 @@ exp_name: defaults
 logging:
   group: null
   id: null
-  name: furniture_bench_2_obs_one_leg_scripted_r3m_non_markovian_dart_0_400_eps
+  name: furniture_bench_2_obs_one_leg_scripted_r3m_non_markovian_400_eps
   project: furniture_bench_one_leg
 multi_run:
-  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_hybrid_furniture_bench_2_obs_one_leg_scripted_r3m_non_markovian_dart_0_400_eps
+  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_hybrid_furniture_bench_2_obs_one_leg_scripted_r3m_non_markovian_400_eps
   run_dir: data/outputs/${multi_run.wandb_name_base}
 horizon: ${eval:${n_obs_steps} + 14}
 n_action_steps: 8

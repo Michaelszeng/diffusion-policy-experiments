@@ -2,6 +2,40 @@ from typing import Dict, Callable, List
 import collections
 import torch
 import torch.nn as nn
+from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
+
+
+def make_distributed_dataloader(
+    dataset,
+    dataloader_cfg: dict,
+    num_processes: int,
+    rank: int,
+    seed: int = 42,
+    shuffle_default: bool = True,
+    drop_last_default: bool = True,
+):
+    """Build a DataLoader where `dataloader_cfg['batch_size']` is the GLOBAL batch summed
+    across processes. In multi-GPU mode the dataset is sharded via DistributedSampler;
+    in single-GPU mode the loader is constructed directly.
+
+    Returns (DataLoader, DistributedSampler | None). `set_epoch` should be called on the
+    returned sampler each epoch when shuffling is enabled.
+    """
+    cfg = dict(dataloader_cfg)
+    global_bs = cfg["batch_size"]
+    assert global_bs % num_processes == 0, (
+        f"batch_size ({global_bs}) must be divisible by num GPUs ({num_processes})"
+    )
+    cfg["batch_size"] = global_bs // num_processes
+    if num_processes > 1:
+        shuffle = cfg.pop("shuffle", shuffle_default)
+        drop_last = cfg.pop("drop_last", drop_last_default)
+        sampler = DistributedSampler(
+            dataset, num_replicas=num_processes, rank=rank, shuffle=shuffle, seed=seed
+        )
+        return DataLoader(dataset, sampler=sampler, drop_last=drop_last, **cfg), sampler
+    return DataLoader(dataset, **cfg), None
 
 def dict_apply(
         x: Dict[str, torch.Tensor], 

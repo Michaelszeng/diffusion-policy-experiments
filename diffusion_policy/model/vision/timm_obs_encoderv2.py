@@ -684,6 +684,20 @@ class TimmObsEncoder(ModuleAttrMixin):
         if output_format not in {"cat", "dit"}:
             raise ValueError(f"Unsupported output_format: {output_format}")
 
+        # The dataset sampler returns the full sequence length (horizon) per key.
+        # `key_first_k` only changes how much real data is loaded; trailing
+        # positions beyond n_obs_steps are NaN-filled placeholders. We truncate
+        # to n_obs_steps here so the encoder never sees those NaN positions and
+        # so downstream cat_output_dim / DIT token counts line up with the UNet.
+        if self._n_obs_steps is not None:
+            To = self._n_obs_steps
+            for key, v in obs_dict.items():
+                if v.shape[1] < To:
+                    raise ValueError(
+                        f"obs_dict[{key!r}] has T={v.shape[1]} < n_obs_steps={To}"
+                    )
+            obs_dict = {k: v[:, :To, ...] for k, v in obs_dict.items()}
+
         core = self._encode_core(obs_dict=obs_dict)
 
         if output_format == "cat":

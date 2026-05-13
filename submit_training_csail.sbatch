@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=diffusion_policy_training
 #SBATCH --account=locomotion
-#SBATCH --partition=vision-shared-h100
+#SBATCH --partition=vision-shared-h200
 #SBATCH --qos=shared-if-available
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus-per-node=1
+#SBATCH --gpus-per-node=2
 #SBATCH --cpus-per-task=20
 #SBATCH --mem=256G
 #SBATCH --time=24:00:00
@@ -65,6 +65,11 @@ export HYDRA_FULL_ERROR=1
 # Experiment configuration
 # ============================================================================
 
+# --- Mundane ---
+EXPERIMENT_CLASS=mundane
+EXPERIMENT_NAME=2_obs_pill_CLIP_film  # batch size 64, LR 1e-4, 2-GPU
+# EXPERIMENT_NAME=8_obs_pill_CLIP_attention  # batch size 64, LR 1e-4, 2-GPU
+
 # --- Planar Pushing ---
 # EXPERIMENT_CLASS=planar_pushing
 # EXPERIMENT_NAME=2_obs
@@ -88,7 +93,7 @@ export HYDRA_FULL_ERROR=1
 # EXPERIMENT_NAME=18_obs_32_horizon_idle_frames_pruned
 
 # --- Furniture Bench ---
-EXPERIMENT_CLASS=furniture_bench
+# EXPERIMENT_CLASS=furniture_bench
 # EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m_only_imitation_juicer_data  # batch size 64, LR 1e-4
 
@@ -121,7 +126,7 @@ EXPERIMENT_CLASS=furniture_bench
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_1000_eps  # batch size 64, LR 1e-4
 
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_100_eps  # batch size 64, LR 1e-4
-EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_200_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_200_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_400_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_1000_eps  # batch size 64, LR 1e-4
 
@@ -185,8 +190,15 @@ if [ "$USE_TORCH_COMPILE" = "true" ]; then
     COMPILE_ARGS="training.use_torch_compile=true training.torch_compile_mode=$TORCH_COMPILE_MODE +dataloader.drop_last=true"
 fi
 
+NUM_GPUS=${SLURM_GPUS_ON_NODE:-1}
+if [ "$NUM_GPUS" -gt 1 ]; then
+    ACCELERATE_ARGS="--num_processes=$NUM_GPUS --multi_gpu --mixed_precision=bf16 --gpu_ids=all"
+else
+    ACCELERATE_ARGS="--num_processes=$NUM_GPUS --mixed_precision=bf16 --gpu_ids=all"
+fi
+
 if [ -z "$CHECKPOINT_PATH" ] || [ "$CHECKPOINT_PATH" == "null" ]; then
-    exec python train.py \
+    exec accelerate launch $ACCELERATE_ARGS train.py \
         --config-dir=$CONFIG_DIR \
         --config-name=$CONFIG_NAME \
         hydra.run.dir=$HYDRA_RUN_DIR \
@@ -197,7 +209,7 @@ if [ -z "$CHECKPOINT_PATH" ] || [ "$CHECKPOINT_PATH" == "null" ]; then
         training.mixed_precision=bf16 \
         $COMPILE_ARGS
 else
-    exec python train.py \
+    exec accelerate launch $ACCELERATE_ARGS train.py \
         --config-dir=$CONFIG_DIR \
         --config-name=$CONFIG_NAME \
         hydra.run.dir=$HYDRA_RUN_DIR \
