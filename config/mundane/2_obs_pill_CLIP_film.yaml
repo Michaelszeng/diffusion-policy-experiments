@@ -139,7 +139,7 @@ task:
     action_key: action  # use "action_follower" to train against the executed-pose stream instead
     zarr_configs:
     - path: data/diffusion_experiments/mundane/pill_v1.zarr
-      max_train_episodes: 477  # 502 episodes total; ~5% held out for validation
+      max_train_episodes: null  # 502 episodes total; ~5% held out for validation
       sampling_weight: null
       val_ratio: 0.01
   name: mundane_pill
