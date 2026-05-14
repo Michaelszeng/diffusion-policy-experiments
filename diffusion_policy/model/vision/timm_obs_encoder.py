@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import timm
@@ -132,7 +132,8 @@ class TimmObsEncoder(ModuleAttrMixin):
     # ── Internal helpers ────────────────────────────────────────────────────────
 
     def _process_rgb(self, imgs: torch.Tensor) -> torch.Tensor:
-        """Crop, normalise, run backbone, and aggregate to one vector per (B, T) pair.
+        """
+        Crop, normalize, run backbone, and aggregate to one vector per (B, T) pair.
 
         Args:
             imgs: (B, T, C, H, W) float in [0, 1]
@@ -162,6 +163,38 @@ class TimmObsEncoder(ModuleAttrMixin):
             raise ValueError(f"Unknown feature_aggregation: {self.feature_aggregation!r}")
 
         return feat.reshape(B, T, self.feature_dim)
+
+    def _assemble_output(
+        self,
+        encoded: Dict[str, torch.Tensor],
+        output_format: str,
+        B: int,
+    ):
+        """Combine per-key (B, To, D) encodings into the requested output ('cat' or 'dit')."""
+        all_keys = self.rgb_keys + self.low_dim_keys
+
+        # FiLM-style: flatten and concatenate every per-key block into one long vector.
+        if output_format == "cat":
+            return torch.cat([encoded[k].reshape(B, -1) for k in all_keys], dim=-1)
+
+        # DIT: one token per (key, timestep) plus per-token positional/modality/range metadata.
+        device = next(self.parameters()).device
+        To = self.n_obs_steps
+        token_list, pos_list, mod_list, range_list = [], [], [], []
+        # Positions: 0 = oldest observation, n_obs_steps-1 = most recent.
+        positions = torch.arange(To, device=device).unsqueeze(0).expand(B, -1)
+        for key in all_keys:
+            token_list.append(encoded[key])
+            pos_list.append(positions)
+            mod_list.append(torch.full((B, To), self.key_to_modality[key], dtype=torch.long, device=device))
+            range_list.append(torch.full((B, To), _RANGE_LONG, dtype=torch.long, device=device))
+
+        return {
+            "tokens":    torch.cat(token_list, dim=1),
+            "positions": torch.cat(pos_list,   dim=1),
+            "modality":  torch.cat(mod_list,   dim=1),
+            "range":     torch.cat(range_list, dim=1),
+        }
 
     # ── Public interface ────────────────────────────────────────────────────────
 
@@ -196,52 +229,77 @@ class TimmObsEncoder(ModuleAttrMixin):
         """
         assert output_format in ("cat", "dit"), f"Unknown output_format: {output_format!r}"
 
-        device = next(self.parameters()).device
         B = next(iter(obs_dict.values())).shape[0]
-
-        # The dataset sampler returns the full sequence length per key (since
-        # `key_first_k` only changes how much real data is loaded, not the
-        # returned shape — trailing positions are NaN-filled placeholders).
-        # We are only responsible for encoding the n_obs_steps observation
-        # window; downstream frames must not be encoded since cat_output_dim
-        # is derived from n_obs_steps and the UNet's cond_dim is sized to match.
         To = self.n_obs_steps
+
+        # The dataset sampler returns the full sequence length per key (trailing positions are
+        # NaN placeholders); only the n_obs_steps observation window may be encoded since
+        # cat_output_dim / cond_dim are sized to it.
         for key, v in obs_dict.items():
-            assert v.shape[1] >= To, (
-                f"obs_dict[{key!r}] has T={v.shape[1]} < n_obs_steps={To}"
-            )
+            assert v.shape[1] >= To, f"obs_dict[{key!r}] has T={v.shape[1]} < n_obs_steps={To}"
         obs_dict = {k: v[:, :To, ...] for k, v in obs_dict.items()}
 
-        # Encode every key → (B, T_obs, feature_dim)
+        # Encode every key → (B, T_obs, feature_dim).
+        # RGB keys
         encoded: Dict[str, torch.Tensor] = {}
         for key in self.rgb_keys:
             encoded[key] = self._process_rgb(obs_dict[key])
+        # Low-dim keys
         for key in self.low_dim_keys:
             x = obs_dict[key].float().flatten(2)  # (B, T_obs, d)
             encoded[key] = self.lowdim_projs[key](x)
 
-        all_keys = self.rgb_keys + self.low_dim_keys
+        return self._assemble_output(encoded, output_format, B)
 
-        if output_format == "cat":
-            return torch.cat([encoded[k].reshape(B, -1) for k in all_keys], dim=-1)
+    def encode_with_cache(
+        self,
+        nobs_rgb_raw: Dict[str, List[torch.Tensor]],
+        nobs_lowdim_full: Dict[str, torch.Tensor],
+        cached_rgb: Dict[str, List[torch.Tensor]],
+        output_format: str = "dit",
+    ):
+        """
+        Cache-aware single-sample (B=1) variant of forward().
 
-        # DIT: assemble token blocks with metadata
-        token_list, pos_list, mod_list, range_list = [], [], [], []
-        # Positions: 0 = oldest observation, n_obs_steps-1 = most recent
-        positions = torch.arange(self.n_obs_steps, device=device).unsqueeze(0).expand(B, -1)
-        for key in all_keys:
-            token_list.append(encoded[key])  # (B, T_obs, D)
-            pos_list.append(positions)
-            mod_list.append(
-                torch.full((B, self.n_obs_steps), self.key_to_modality[key], dtype=torch.long, device=device)
+        For each rgb key: cached features fill the oldest positions, raw frames fill the newest;
+        len(cached_rgb[k]) + len(nobs_rgb_raw[k]) must equal n_obs_steps.
+
+        Returns:
+            (assembled, newly_encoded) where:
+                assembled       : same shape as forward() for the given output_format
+                newly_encoded   : dict[key -> List[(D,)]] features encoded this call,
+                                  one per entry in nobs_rgb_raw[key] in the same order.
+        """
+        assert output_format in ("cat", "dit"), f"Unknown output_format: {output_format!r}"
+
+        To = self.n_obs_steps
+        device = next(self.parameters()).device
+        newly_encoded: Dict[str, List[torch.Tensor]] = {}
+
+        # Per rgb key: one backbone pass over the raw frames, then concat cached + new along time.
+        encoded: Dict[str, torch.Tensor] = {}
+        for key in self.rgb_keys:
+            raws = nobs_rgb_raw.get(key, [])
+            cached = cached_rgb.get(key, [])
+            assert len(cached) + len(raws) == To, (
+                f"key={key!r}: cached ({len(cached)}) + raw ({len(raws)}) != n_obs_steps ({To})"
             )
-            range_list.append(
-                torch.full((B, self.n_obs_steps), _RANGE_LONG, dtype=torch.long, device=device)
-            )
 
-        return {
-            "tokens":    torch.cat(token_list, dim=1),   # (B, n_keys*T_obs, D)
-            "positions": torch.cat(pos_list,   dim=1),   # (B, n_keys*T_obs)
-            "modality":  torch.cat(mod_list,   dim=1),   # (B, n_keys*T_obs)
-            "range":     torch.cat(range_list, dim=1),   # (B, n_keys*T_obs)
-        }
+            # Backbone pass over raw frames (one stacked call per key).
+            if raws:
+                stacked = torch.stack(raws, dim=0).unsqueeze(0).to(device)  # (1, n_raw, C, H, W)
+                new_feats = self._process_rgb(stacked)  # (1, n_raw, D)
+                newly_encoded[key] = [new_feats[0, i] for i in range(len(raws))]
+            else:
+                newly_encoded[key] = []
+
+            # Cached features (oldest positions) followed by freshly-encoded features (newest positions).
+            all_feats = [c.to(device) for c in cached] + newly_encoded[key]
+            encoded[key] = torch.stack(all_feats, dim=0).unsqueeze(0)  # (1, To, D)
+
+        # Low-dim keys
+        for key in self.low_dim_keys:
+            x = nobs_lowdim_full[key][:, :To, ...].to(device).float().flatten(2)  # (1, To, d)
+            encoded[key] = self.lowdim_projs[key](x)
+
+        return self._assemble_output(encoded, output_format, B=1), newly_encoded

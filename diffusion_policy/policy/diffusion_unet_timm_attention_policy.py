@@ -1,4 +1,4 @@
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import torch
 import torch.nn as nn
@@ -114,31 +114,70 @@ class DiffusionUnetTimmAttentionPolicy(BaseImagePolicy):
         self.num_inference_steps = num_DDPM_inference_steps
         self.num_ddim_inference_steps = num_ddim_inference_steps
 
-    def _encode_obs(self, nobs: Dict[str, torch.Tensor]):
-        """Returns tokens, positions, modalities, ranges from the obs encoder (dit mode).
-
-        With single encoder: all tokens carry range=LONG.
-        With dual encoder (short_range_obs_horizon is not None): the full n_obs_steps window
-        is encoded by ``obs_encoder`` (LONG-range tokens), and the most recent
-        ``short_range_obs_horizon`` frames are ALSO encoded by ``short_range_encoder``
-        (SHORT-range tokens). During training, the entire short-range token block is
-        replaced per-sample with a learned null token with probability ``short_range_dropout``.
+    def _encode_obs(
+        self,
+        nobs: Dict[str, torch.Tensor],
+        cached_long: Optional[Dict[str, List[torch.Tensor]]] = None,
+        cached_short: Optional[Dict[str, List[torch.Tensor]]] = None,
+    ):
         """
-        long_enc = self.obs_encoder(nobs, output_format="dit")
+        Returns (tokens, positions, modalities, ranges, new_long, new_short) from the obs encoder.
+
+        If cached_long (and/or cached_short) are provided (cache mode, B=1):
+            nobs[rgb_key]: List[Tensor (C, H, W)] — the raw frames that have not yet been encoded,
+                                                    corresponding to the newest timesteps.
+            nobs[lowdim_key]: Tensor (1, T, dim) — low dim obs from the full observation window.
+            cached_long / cached_short: Dict[rgb_key -> List[Tensor (D,)]] — already-encoded visual features
+                                                                             corresponding to the oldest timesteps.
+        Else:
+            nobs[key] is (B, T, ...) for every key.
+        """
+        cache_mode = cached_long is not None
+
+        # Long-range encoding
+        if cache_mode:
+            nobs_rgb_raw = {key: nobs[key] for key in self.obs_encoder.rgb_keys}
+            nobs_lowdim_full = {key: nobs[key] for key in self.obs_encoder.low_dim_keys}
+            long_enc, new_long = self.obs_encoder.encode_with_cache(
+                nobs_rgb_raw=nobs_rgb_raw,
+                nobs_lowdim_full=nobs_lowdim_full,
+                cached_rgb=cached_long,
+                output_format="dit",
+            )
+        else:
+            long_enc = self.obs_encoder(nobs, output_format="dit")
+            new_long: Dict[str, List[torch.Tensor]] = {}
+
         long_tokens = long_enc["tokens"]
         long_positions = long_enc["positions"]
         long_modalities = long_enc["modality"]
         long_ranges = long_enc["range"]
+        new_short: Dict[str, List[torch.Tensor]] = {}
 
+        # Single-encoder policies stop here.
         if self.short_range_obs_horizon is None:
-            return long_tokens, long_positions, long_modalities, long_ranges
+            return long_tokens, long_positions, long_modalities, long_ranges, new_long, new_short
 
+        # Short-range encoding: re-encode the most recent To_short frames via the short-range encoder.
         To = self.obs_encoder.n_obs_steps
         To_short = self.short_range_obs_horizon
-        # Pre-slice each key to the most recent To_short frames so the short-range encoder
-        # (configured with n_obs_steps=To_short) encodes the correct window.
-        short_nobs = {k: v[:, To - To_short:To, ...] for k, v in nobs.items()}
-        short_enc = self.short_range_encoder(short_nobs, output_format="dit")
+
+        if cache_mode:
+            # Most recent up-to-To_short raw RGB frames 
+            short_rgb_raw = {key: nobs[key][-To_short:] for key in self.short_range_encoder.rgb_keys}
+            # Most recent To_short low dim obs
+            short_lowdim = {key: nobs[key][:, (To-To_short):To, ...] for key in self.short_range_encoder.low_dim_keys}
+            short_enc, new_short = self.short_range_encoder.encode_with_cache(
+                nobs_rgb_raw=short_rgb_raw,
+                nobs_lowdim_full=short_lowdim,
+                cached_rgb=cached_short if cached_short else {},
+                output_format="dit",
+            )
+        else:
+            # Pre-slice each key to the most recent To_short frames so the short-range encoder
+            # (configured with n_obs_steps=To_short) encodes the correct window.
+            short_nobs = {key: v[:, To - To_short:To, ...] for key, v in nobs.items()}
+            short_enc = self.short_range_encoder(short_nobs, output_format="dit")
 
         short_tokens = short_enc["tokens"]
         # The short-range encoder emits positions 0..To_short-1 (its local window); shift
@@ -163,7 +202,7 @@ class DiffusionUnetTimmAttentionPolicy(BaseImagePolicy):
         positions = torch.cat([long_positions, short_positions], dim=1)
         modalities = torch.cat([long_modalities, short_modalities], dim=1)
         ranges = torch.cat([long_ranges, short_ranges], dim=1)
-        return tokens, positions, modalities, ranges
+        return tokens, positions, modalities, ranges, new_long, new_short
 
     # ── Inference ──────────────────────────────────────────────────────────────
 
@@ -216,8 +255,28 @@ class DiffusionUnetTimmAttentionPolicy(BaseImagePolicy):
         trajectory = torch.where(inpaint_mask, inpaint_data, trajectory)
         return trajectory
 
-    def predict_action(self, obs_dict: Dict[str, torch.Tensor], use_DDIM=False, **kwargs) -> Dict[str, torch.Tensor]:
-        assert "past_action" not in obs_dict
+    def predict_action(
+        self,
+        raw_obs_dict: Dict[str, torch.Tensor],
+        cached_long: Optional[Dict[str, List[torch.Tensor]]] = None,
+        cached_short: Optional[Dict[str, List[torch.Tensor]]] = None,
+        use_DDIM: bool = False,
+        **kwargs,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Predict an action sequence.
+
+        If cached_long (and/or cached_short) are provided (cache mode, B=1):
+            raw_obs_dict[rgb_key]: List[Tensor (C, H, W)] — the raw frames that have not yet been encoded,
+                                                            corresponding to the newest timesteps.
+            raw_obs_dict[lowdim_key]: Tensor (1, T, dim) — low dim obs from the full observation window.
+            cached_long / cached_short: Dict[rgb_key -> List[Tensor (D,)]] — already-encoded visual features
+                                                                             corresponding to the oldest timesteps.
+        Else:
+            raw_obs_dict[key] is (B, T, ...) for every key.
+        """
+        assert "past_action" not in raw_obs_dict
+        cache_mode = cached_long is not None
 
         mixed_precision = getattr(self, "mixed_precision", None) or "no"
         with torch.autocast(
@@ -225,15 +284,34 @@ class DiffusionUnetTimmAttentionPolicy(BaseImagePolicy):
             dtype=torch.bfloat16 if mixed_precision == "bf16" else torch.float16,
             enabled=mixed_precision != "no",
         ):
-            nobs = self.normalizer.normalize(obs_dict)
-            B = next(iter(nobs.values())).shape[0]
-            tokens, positions, modalities, ranges = self._encode_obs(nobs)
+            # Normalize raw obs. In cache mode rgb keys are lists of (C,H,W) tensors that need
+            # stacking before the normalizer accepts them, then unstacking back for the encoder.
+            if cache_mode:
+                nobs: Dict[str, torch.Tensor] = {}
+                for key in self.obs_encoder.rgb_keys:
+                    raws = raw_obs_dict[key]
+                    if raws:
+                        stacked = torch.stack(raws, dim=0).unsqueeze(0)  # (1, n_raw, C, H, W)
+                        normalized = self.normalizer.normalize({key: stacked})[key]
+                        nobs[key] = [normalized[0, i] for i in range(len(raws))]
+                    else:
+                        nobs[key] = []
+                for key in self.obs_encoder.low_dim_keys:
+                    nobs[key] = self.normalizer.normalize({key: raw_obs_dict[key]})[key]
+                B = 1
+            else:
+                nobs = self.normalizer.normalize(raw_obs_dict)
+                B = next(iter(nobs.values())).shape[0]
 
-            inpaint_data = torch.zeros(
-                B, self.prediction_horizon, self.action_dim, device=self.device, dtype=self.dtype
+            tokens, positions, modalities, ranges, new_long, new_short = self._encode_obs(
+                nobs, cached_long=cached_long, cached_short=cached_short
             )
+
+            # Empty inpaint slots: no known/fixed actions, the UNet predicts the full horizon.
+            inpaint_data = torch.zeros(B, self.prediction_horizon, self.action_dim, device=self.device, dtype=self.dtype)
             inpaint_mask = torch.zeros_like(inpaint_data, dtype=torch.bool)
 
+            # DDIM/DDPM denoising loop conditioned on the encoded token sequence.
             nsample = self.conditional_sample(
                 inpaint_data=inpaint_data,
                 inpaint_mask=inpaint_mask,
@@ -244,7 +322,12 @@ class DiffusionUnetTimmAttentionPolicy(BaseImagePolicy):
                 use_ddim=use_DDIM,
             )
             assert nsample.shape == (B, self.prediction_horizon, self.action_dim)
-            return {"action_pred": self.normalizer["action"].unnormalize(nsample)}
+
+            result = {"action_pred": self.normalizer["action"].unnormalize(nsample)}
+            if cache_mode:
+                result["new_features_long"] = new_long
+                result["new_features_short"] = new_short
+            return result
 
     # ── Training ───────────────────────────────────────────────────────────────
 
@@ -256,7 +339,7 @@ class DiffusionUnetTimmAttentionPolicy(BaseImagePolicy):
         nobs = self.normalizer.normalize(batch["obs"])
         nactions = self.normalizer["action"].normalize(batch["action"])
 
-        tokens, positions, modalities, ranges = self._encode_obs(nobs)
+        tokens, positions, modalities, ranges, _, _ = self._encode_obs(nobs)
 
         trajectory = nactions
         noise = torch.randn(trajectory.shape, device=trajectory.device, dtype=self.dtype)

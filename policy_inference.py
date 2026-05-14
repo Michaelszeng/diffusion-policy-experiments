@@ -1,12 +1,11 @@
 """
-ZMQ inference server with per-frame observation-feature caching.
+ZMQ inference server with observation-feature caching.
 
 The server loads a trained TimmObsEncoder policy and exposes a ZMQ endpoint.
-Each request contains n_obs_steps observations indexed by client-generated `frame_ids`.
-The client may include cached encoder features for some frames; the server only runs vision
-backbone forward passes on non-cached images.
-The response returns the action sequence (with past prediction tokens sliced off) plus any
-features the server just encoded so the client can extend its cache.
+Each request supplies observations for all n_obs_steps positions in the obs window
+(oldest → newest). Cached encoder features occupy the oldest positions; raw PNGs occupy
+the newest. The server only runs the vision backbone on raw frames and returns those
+features so the client can extend its cache.
 
 Supported policies:
     DiffusionUnetTimmAttentionPolicy
@@ -15,34 +14,32 @@ Supported policies:
 Wire format (pickled via socket.send_pyobj / recv_pyobj):
 
     request = {
-        "frames": {                          # n_obs_steps entries, insertion order = oldest → newest
-            <frame_id>: {
-                "<rgb_key>":     {"raw": <png_bytes>}                               # raw frame
-                                 | {"long": np.ndarray}                             # cached, long-range only
-                                 | {"long": np.ndarray, "short": np.ndarray},       # cached, dual encoder
-                "<low_dim_key>": np.ndarray,                                        # (dim,)
-            },
-            ...
-        }
+        # Per rgb key: cached features at oldest positions, raw PNG bytes at newest.
+        # len(cached_long[k]) + len(rgb_raw[k]) must equal n_obs_steps.
+        "rgb_raw":      { "<rgb_key>": [png_bytes, ...] },
+        "cached_long":  { "<rgb_key>": [np.ndarray, ...] },
+        "cached_short": { "<rgb_key>": [np.ndarray, ...] },  # dual-encoder only
+
+        # Low-dim observations pre-batched across the obs window.
+        "lowdim":       { "<low_dim_key>": np.ndarray of shape (n_obs_steps, dim) },
     }
 
     response = {
-        "action": np.ndarray,                # (n_future_actions, action_dim)
-        "new_features": {                    # everything the server encoded this turn
-            <frame_id>: {
-                "<rgb_key>": {"long": np.ndarray, "short": np.ndarray | omitted},
-            },
-            ...
-        },
+        "action": np.ndarray,                                          # (n_future_actions, action_dim)
+        "new_features_long":  { "<rgb_key>": [np.ndarray, ...] },      # one per raw frame, oldest→newest
+        "new_features_short": { "<rgb_key>": [np.ndarray, ...] },      # dual-encoder only
     }
     # On error: response is the traceback string instead of a dict.
+
+NOTE: For dual-encoder policies, cached_short[k] covers positions [T - H, T - n_raw),
+      where T = n_obs_steps, H = short_range_obs_horizon, n_raw = len(rgb_raw[k]).
 """
 
 import os
 import sys
 import time
 import traceback
-from typing import Dict, Hashable, Tuple
+from typing import Dict, List
 
 import click
 import cv2
@@ -148,110 +145,57 @@ class PolicyInferenceNode:
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         return torch.from_numpy(img).permute(2, 0, 1).contiguous().float().div(255.0).to(self.device)
 
-    def _normalize_rgb_dict(self, key: str, frame_dict: Dict[Hashable, torch.Tensor]) -> Dict[Hashable, torch.Tensor]:
-        """Apply the policy's normalizer to a per-frame dict of (C,H,W) tensors."""
-        if len(frame_dict) == 0:
-            return {}
-        fids = list(frame_dict.keys())
-        stacked = torch.stack([frame_dict[fid] for fid in fids], dim=0).unsqueeze(0)  # (1, T, C, H, W)
-        normalized = self.policy.normalizer.normalize({key: stacked})[key]
-        return {fid: normalized[0, i] for i, fid in enumerate(fids)}
-
     # ── Inference ──────────────────────────────────────────────────────────────
 
     def predict_action(self, request: dict) -> dict:
-        # Parse request envelope; frame insertion order is oldest → newest.
-        frames = request["frames"]
-        if len(frames) != self.n_obs_steps:
-            raise ValueError(f"request['frames'] has {len(frames)} entries, expected n_obs_steps={self.n_obs_steps}")
-        frame_ids = list(frames.keys())
-        expected_keys = set(self.rgb_keys) | set(self.low_dim_keys)
+        # Window layout: positions [0, T - n_raw) are cached, [T - n_raw, T) are raw.
+        T = self.n_obs_steps
+        H = self.short_range_obs_horizon  # None for single-encoder policies
 
-        # Walk every (fid, key) once and route to raw-RGB / cached / low-dim collections.
-        raw_rgb_unnorm: Dict[str, Dict[Hashable, torch.Tensor]] = {k: {} for k in self.rgb_keys}
-        cached_long: Dict[Tuple[str, Hashable], torch.Tensor] = {}
-        cached_short: Dict[Tuple[str, Hashable], torch.Tensor] = {}
-        lowdim_per_frame: Dict[str, Dict[Hashable, np.ndarray]] = {k: {} for k in self.low_dim_keys}
-
-        for fid, frame in frames.items():
-            provided = set(frame.keys())
-            missing = expected_keys - provided
-            if missing:
-                raise KeyError(f"frame {fid!r} is missing keys: {sorted(missing)}")
-            extra = provided - expected_keys
-            if extra:
-                raise KeyError(f"frame {fid!r} has unexpected keys: {sorted(extra)}")
-
-            for key, val in frame.items():
-                if key in self.rgb_keys:
-                    self._parse_rgb_entry(fid, key, val, raw_rgb_unnorm, cached_long, cached_short)
-                else:
-                    lowdim_per_frame[key][fid] = np.asarray(val)
-
-        # Decode + normalize raw RGB frames (per-key batched normalization).
-        nobs_rgb_raw: Dict[str, Dict[Hashable, torch.Tensor]] = {
-            key: self._normalize_rgb_dict(key, raw_rgb_unnorm[key]) for key in self.rgb_keys
+        # Decode raw RGB PNG bytes per key into per-key lists of (C,H,W) tensors on device.
+        nobs_rgb_raw: Dict[str, List[torch.Tensor]] = {
+            key: [self._decode_rgb(b) for b in request["rgb_raw"][key]]
+            for key in self.rgb_keys
         }
 
-        # Stack per-frame low-dim slices in frame_ids order and normalize.
-        nobs_lowdim_full: Dict[str, torch.Tensor] = {}
-        for key in self.low_dim_keys:
-            arrs = [lowdim_per_frame[key][fid] for fid in frame_ids]
-            stacked = np.stack(arrs, axis=0)  # (n_obs_steps, dim)
-            t = torch.from_numpy(stacked).float().unsqueeze(0).to(self.device)  # (1, T, dim)
-            nobs_lowdim_full[key] = self.policy.normalizer.normalize({key: t})[key]
+        # Convert cached arrays to per-key lists of device tensors (aligned with oldest window positions).
+        cached_long: Dict[str, List[torch.Tensor]] = {
+            key: [torch.from_numpy(np.asarray(a)).float().to(self.device) for a in arr_list]
+            for key, arr_list in request["cached_long"].items()
+        }
+        cached_short: Dict[str, List[torch.Tensor]] = {}
+        if H is not None:
+            cached_short = {
+                key: [torch.from_numpy(np.asarray(a)).float().to(self.device) for a in arr_list]
+                for key, arr_list in request.get("cached_short", {}).items()
+            }
+        nobs_lowdim_full: Dict[str, torch.Tensor] = {
+            key: torch.from_numpy(np.asarray(request["lowdim"][key])).float().unsqueeze(0).to(self.device)
+            for key in self.low_dim_keys
+        }
 
-        # Run the cache-aware policy: encodes only un-cached frames, then DDIM/DDPM.
-        # The encoder raises KeyError with frame/key context if a required entry is missing
-        # (e.g., a short-range frame that has only 'long' cached and no raw).
+        # Run the cache-aware policy: it normalizes obs, encodes only raw frames, then DDIM/DDPM denoising.
+        raw_obs_dict = {**nobs_rgb_raw, **nobs_lowdim_full}
         with torch.inference_mode():
-            result = self.policy.predict_action_cached(
-                nobs_rgb_raw=nobs_rgb_raw,
-                nobs_lowdim_full=nobs_lowdim_full,
+            result = self.policy.predict_action(
+                raw_obs_dict,
                 cached_long=cached_long,
                 cached_short=cached_short,
-                frame_ids=frame_ids,
                 use_DDIM=self.use_ddim,
             )
 
-        # Drop the first n_obs_steps-1 entries (past_token_prediction outputs); return the rest.
-        action_pred = result["action_pred"][0].detach().cpu().numpy()
-        action = action_pred[self.n_obs_steps - 1 :]
+        # Drop the first n_obs_steps - 1 entries (past-token predictions); return the future actions.
+        action = result["action_pred"][0].detach().cpu().numpy()[T - 1:]
 
-        # Reshape new_features into nested dict[fid → dict[key → dict[tag → ndarray]]].
-        new_features_nested: Dict[Hashable, Dict[str, Dict[str, np.ndarray]]] = {}
-        for (key, fid, tag), tensor in result["new_features"].items():
-            new_features_nested.setdefault(fid, {}).setdefault(key, {})[tag] = tensor.detach().cpu().numpy()
-        return {"action": action, "new_features": new_features_nested}
+        # Convert newly-encoded features (per-key lists of tensors) to per-key lists of ndarrays.
+        new_features_long = {key: [v.detach().cpu().numpy() for v in vs] for key, vs in result["new_features_long"].items()}
+        new_features_short = {key: [v.detach().cpu().numpy() for v in vs] for key, vs in result["new_features_short"].items() if vs}
 
-    def _parse_rgb_entry(
-        self,
-        fid: Hashable,
-        key: str,
-        val: dict,
-        raw_rgb_unnorm: Dict[str, Dict[Hashable, torch.Tensor]],
-        cached_long: Dict[Tuple[str, Hashable], torch.Tensor],
-        cached_short: Dict[Tuple[str, Hashable], torch.Tensor],
-    ):
-        """Dispatch one rgb-key entry: tagged union with either {'raw'} or {'long'[, 'short']}."""
-        if not isinstance(val, dict):
-            raise ValueError(f"frame {fid!r} key {key!r} must be a dict (raw/long/short); got {type(val).__name__}")
-        keys = set(val.keys())
-        if "raw" in keys:
-            if keys != {"raw"}:
-                raise ValueError(
-                    f"frame {fid!r} key {key!r}: 'raw' is mutually exclusive with 'long'/'short' (got {sorted(keys)})"
-                )
-            raw_rgb_unnorm[key][fid] = self._decode_rgb(val["raw"])
-            return
-        unknown = keys - {"long", "short"}
-        if unknown:
-            raise ValueError(f"frame {fid!r} key {key!r} has unknown subkeys: {sorted(unknown)}")
-        if "long" not in keys:
-            raise ValueError(f"frame {fid!r} key {key!r}: must contain 'raw' or 'long' (got {sorted(keys)})")
-        cached_long[(key, fid)] = torch.from_numpy(np.asarray(val["long"])).float().to(self.device)
-        if "short" in keys:
-            cached_short[(key, fid)] = torch.from_numpy(np.asarray(val["short"])).float().to(self.device)
+        return {
+            "action": action,
+            "new_features_long": new_features_long,
+            "new_features_short": new_features_short,
+        }
 
     def run_node(self):
         # Bind ZMQ REP and serve forever; exceptions are returned as the response body.
@@ -264,10 +208,11 @@ class PolicyInferenceNode:
             try:
                 t0 = time.monotonic()
                 response = self.predict_action(request)
+                n_new_long = sum(len(v) for v in response["new_features_long"].values())
                 print(
                     f"Inference time: {time.monotonic() - t0:.3f}s | "
-                    f"new_features={len(response['new_features'])} entries | "
-                    f"action shape={response['action'].shape}"
+                    f"new_features_long={n_new_long} entries | "
+                    # f"action shape={response['action'].shape}"
                 )
             except Exception:
                 err = echo_exception()
