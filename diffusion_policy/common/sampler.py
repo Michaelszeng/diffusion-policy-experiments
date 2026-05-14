@@ -165,7 +165,6 @@ class ImprovedDatasetSampler:
                     sample[:k_data] = input_arr[buffer_start_idx : buffer_start_idx + k_data]
                 except Exception:
                     import pdb
-
                     pdb.set_trace()
             data = sample
             if (sample_start_idx > 0) or (sample_end_idx < self.sequence_length):

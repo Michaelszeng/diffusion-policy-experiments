@@ -60,6 +60,12 @@ shape_meta:
       - 128
       - 3
       type: rgb
+    wrist_camera:
+      shape:
+      - 128
+      - 128
+      - 3
+      type: rgb
 policy:  # Parameters to be passed to policy (i.e. the _target_ policy class below)
   _target_: diffusion_policy.policy.diffusion_unet_hybrid_image_targeted_policy.DiffusionUnetHybridImageTargetedPolicy
   diffusion_step_embed_dim: 128
@@ -113,7 +119,8 @@ task:
     # - qpos: shape=[7] (joint positions only)
     # - tcp_pose: shape=[7] (end-effector pose)
     camera_keys:
-      - "base_camera"  # Extract RGB images from obs/sensor_data/base_camera/rgb
+      - "base_camera"   # Extract RGB images from obs/sensor_data/base_camera/rgb
+      - "wrist_camera"  # Extract RGB images from obs/sensor_data/wrist_camera/rgb
     h5_configs:
     - h5_path: /home/michzeng/ManiSkill/runs/Planar-PushT-v1__ppo_fast__1__1766536544/checkpoints/test_videos/trajectory.rgb.pd_ee_delta_pose.physx_cuda.h5  # RGB ManiSkill dataset
       json_path: /home/michzeng/ManiSkill/runs/Planar-PushT-v1__ppo_fast__1__1766536544/checkpoints/test_videos/trajectory.rgb.pd_ee_delta_pose.physx_cuda.json  # JSON metadata
