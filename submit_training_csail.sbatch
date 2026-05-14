@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=diffusion_policy_training
 #SBATCH --account=locomotion
-#SBATCH --partition=vision-shared-h200
-#SBATCH --qos=shared-if-available
+#SBATCH --partition=locomotion-h200
+#SBATCH --qos=locomotion-main
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=2
@@ -190,8 +190,15 @@ if [ "$USE_TORCH_COMPILE" = "true" ]; then
     COMPILE_ARGS="training.use_torch_compile=true training.torch_compile_mode=$TORCH_COMPILE_MODE +dataloader.drop_last=true"
 fi
 
+NUM_GPUS=${SLURM_GPUS_ON_NODE:-1}
+if [ "$NUM_GPUS" -gt 1 ]; then
+    ACCELERATE_ARGS="--num_processes=$NUM_GPUS --multi_gpu --mixed_precision=bf16 --gpu_ids=all"
+else
+    ACCELERATE_ARGS="--num_processes=$NUM_GPUS --mixed_precision=bf16 --gpu_ids=all"
+fi
+
 if [ -z "$CHECKPOINT_PATH" ] || [ "$CHECKPOINT_PATH" == "null" ]; then
-    exec python train.py \
+    exec accelerate launch $ACCELERATE_ARGS train.py \
         --config-dir=$CONFIG_DIR \
         --config-name=$CONFIG_NAME \
         hydra.run.dir=$HYDRA_RUN_DIR \
@@ -202,7 +209,7 @@ if [ -z "$CHECKPOINT_PATH" ] || [ "$CHECKPOINT_PATH" == "null" ]; then
         training.mixed_precision=bf16 \
         $COMPILE_ARGS
 else
-    exec python train.py \
+    exec accelerate launch $ACCELERATE_ARGS train.py \
         --config-dir=$CONFIG_DIR \
         --config-name=$CONFIG_NAME \
         hydra.run.dir=$HYDRA_RUN_DIR \

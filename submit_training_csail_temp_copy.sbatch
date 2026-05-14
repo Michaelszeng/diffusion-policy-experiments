@@ -121,27 +121,16 @@ EXPERIMENT_CLASS=furniture_bench
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_1000_eps  # batch size 64, LR 1e-4
 
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_200_eps  # batch size 64, LR 1e-4
-# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_03125_200_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_0625_200_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_125_200_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_25_200_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_5_200_eps  # batch size 64, LR 1e-4
-# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_75_200_eps  # batch size 64, LR 1e-4
-# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_1_0_200_eps  # batch size 64, LR 1e-4
-
-# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_400_eps  # batch size 64, LR 1e-4
-# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_03125_400_eps  # batch size 64, LR 1e-4
-# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_0625_400_eps  # batch size 64, LR 1e-4
-# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_125_400_eps  # batch size 64, LR 1e-4
-# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_25_400_eps  # batch size 64, LR 1e-4
-# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_5_400_eps  # batch size 64, LR 1e-4
-# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_75_400_eps  # batch size 64, LR 1e-4
-# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_1_0_400_eps  # batch size 64, LR 1e-4
+EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_1_0_200_eps  # batch size 64, LR 1e-4
 
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_dart_0_200_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_dart_0_0625_200_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_dart_0_125_200_eps  # batch size 64, LR 1e-4
-EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_dart_0_25_200_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_dart_0_25_200_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_dart_0_5_200_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_dart_1_0_200_eps  # batch size 64, LR 1e-4
 
