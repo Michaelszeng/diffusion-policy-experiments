@@ -52,15 +52,15 @@ shape_meta:
       type: low_dim
     overhead_camera:
       shape:
+      - 128
+      - 128
       - 3
-      - 128
-      - 128
       type: rgb
     wrist_camera:
       shape:
+      - 128
+      - 128
       - 3
-      - 128
-      - 128
       type: rgb
 policy:
   _target_: diffusion_policy.policy.diffusion_unet_hybrid_image_targeted_policy.DiffusionUnetHybridImageTargetedPolicy
