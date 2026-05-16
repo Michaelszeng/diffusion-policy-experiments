@@ -466,9 +466,11 @@ class BaseZarrImageDataset(BaseImageDataset):
         seed: int = 42,
         val_ratio: float = 0.0,
         color_jitter: Optional[Dict] = None,
+        downsample_steps: int = 1,
     ):
         super().__init__()
         self._validate_zarr_configs(zarr_configs)
+        assert downsample_steps >= 1, f"downsample_steps must be >= 1, got {downsample_steps}"
 
         obs_meta = shape_meta["obs"]
         self.rgb_keys = [k for k, v in obs_meta.items() if v.get("type") == "rgb"]
@@ -507,6 +509,7 @@ class BaseZarrImageDataset(BaseImageDataset):
                 pad_after=pad_after,
                 episode_mask=train_mask,
                 key_first_k=key_first_k,
+                downsample_steps=downsample_steps,
             ))
             self.sample_probabilities[i] = cfg.get("sampling_weight") or np.sum(train_mask)
 
@@ -515,6 +518,7 @@ class BaseZarrImageDataset(BaseImageDataset):
         self.pad_before = pad_before
         self.pad_after = pad_after
         self.n_obs_steps = n_obs_steps
+        self.downsample_steps = downsample_steps
         self.transforms = self.get_default_color_jitter(color_jitter)
 
     def _get_buffer_keys(self) -> List[str]:
@@ -659,6 +663,7 @@ class BaseZarrImageDataset(BaseImageDataset):
                 pad_before=self.pad_before,
                 pad_after=self.pad_after,
                 episode_mask=self.val_masks[index],
+                downsample_steps=self.downsample_steps,
             )
         ]
         return val_set

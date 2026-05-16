@@ -17,39 +17,69 @@ def create_indices(
     episode_mask: np.ndarray,
     pad_before: int = 0,
     pad_after: int = 0,
+    downsample_steps: int = 1,
     debug: bool = True,
 ) -> np.ndarray:
+    """
+    Generate array of indices for each sample in the dataset.
+
+    Output format: [buffer_start_idx, buffer_end_idx, sample_start_idx, sample_end_idx]
+     - buffer_start_idx: index of the first frame in the ReplayBuffer to sample
+     - buffer_end_idx: index of the last frame in the ReplayBuffer to sample + 1
+     - sample_start_idx: index of the first real frame in the sample (before that is padding)
+     - sample_end_idx: index of the last real frame in the sample (after that is padding) + 1
+    """
     episode_mask.shape == episode_ends.shape
     pad_before = min(max(pad_before, 0), sequence_length - 1)
     pad_after = min(max(pad_after, 0), sequence_length - 1)
+    N = max(downsample_steps, 1)
 
     indices = list()
+    # Iterate over each episode
     for i in range(len(episode_ends)):
+        # Skip episode if it is not in the train mask
         if not episode_mask[i]:
-            # skip episode
             continue
-        start_idx = 0
-        if i > 0:
-            start_idx = episode_ends[i - 1]
+
+        # Get the start and end indices of the current episode
+        start_idx = 0 if i == 0 else episode_ends[i - 1]
         end_idx = episode_ends[i]
         episode_length = end_idx - start_idx
 
-        min_start = -pad_before
-        max_start = episode_length - sequence_length + pad_after
+        # Allow up to pad_before sample positions to fall before the episode start
+        min_window_start = start_idx - pad_before * N
+        # Require at least (sequence_length - pad_after) in-bounds sample positions
+        max_window_start = end_idx - (sequence_length - pad_after - 1) * N - 1
 
-        # range stops one idx before end
-        for idx in range(min_start, max_start + 1):
-            buffer_start_idx = max(idx, 0) + start_idx
-            buffer_end_idx = min(idx + sequence_length, episode_length) + start_idx
-            start_offset = buffer_start_idx - (idx + start_idx)
-            end_offset = (idx + sequence_length + start_idx) - buffer_end_idx
-            sample_start_idx = 0 + start_offset
-            sample_end_idx = sequence_length - end_offset
+        # Iterate over each absolute buffer index in the current episode
+        for idx in range(min_window_start, max_window_start + 1):
+            # Calculate idx (in the window) of the first valid frame in the sequence.
+            # If the sequence starts before the episode, we skip those out-of-bounds frames.
+            if idx < start_idx:
+                sample_start_idx = (start_idx - idx + N - 1) // N
+            else:
+                sample_start_idx = 0
+
+            # Calculate idx (in the window) of the first frame that falls past the end of the episode.
+            remaining = end_idx - idx
+            if remaining <= 0:  # Entire window falls outside episode boundary
+                sample_end_idx = 0
+            else:
+                sample_end_idx = (remaining + N - 1) // N
+                if sample_end_idx > sequence_length:
+                    sample_end_idx = sequence_length
+
+            buffer_start_idx = idx + sample_start_idx * N
+            buffer_end_idx = idx + (sample_end_idx - 1) * N + 1
+
             if debug:
-                assert start_offset >= 0
-                assert end_offset >= 0
-                assert (sample_end_idx - sample_start_idx) == (buffer_end_idx - buffer_start_idx)
+                assert sample_start_idx >= 0
+                assert sample_end_idx > sample_start_idx
+                assert buffer_start_idx >= start_idx
+                assert buffer_end_idx <= end_idx
+
             indices.append([buffer_start_idx, buffer_end_idx, sample_start_idx, sample_end_idx])
+
     indices = np.array(indices)
     return indices
 
@@ -93,10 +123,16 @@ class ImprovedDatasetSampler:
         keys=None,
         key_first_k=dict(),
         episode_mask: Optional[np.ndarray] = None,
+        downsample_steps: int = 1,
     ):
         """
         key_first_k: dict str: int
             Only take first k data from these keys (to improve performance)
+
+        downsample_steps: int
+            Stride between sample positions in the replay buffer.
+            With N = downsample_steps, sample position j (0-indexed) reads buffer index idx + j*N. 
+            Example: downsample_steps = 3 to sample 10 Hz windows from a 30 Hz buffer.
 
         Padding behavior:
             Observation padding (episode start) is automatic: when a window extends
@@ -107,6 +143,8 @@ class ImprovedDatasetSampler:
             equivalent to SequenceSampler's action_padding=True behavior.
         """
         assert sequence_length >= 1
+        assert downsample_steps >= 1
+
         if keys is None:
             keys = list(replay_buffer.keys())
 
@@ -121,16 +159,21 @@ class ImprovedDatasetSampler:
                 pad_before=pad_before,
                 pad_after=pad_after,
                 episode_mask=episode_mask,
+                downsample_steps=downsample_steps,
             )
         else:
             indices = np.zeros((0, 4), dtype=np.int64)
 
         # (buffer_start_idx, buffer_end_idx, sample_start_idx, sample_end_idx)
+        # With stride N>1, buffer_end_idx - buffer_start_idx is the buffer *span*
+        # (not the frame count); the slice [buffer_start_idx:buffer_end_idx:N]
+        # yields sample_end_idx - sample_start_idx frames.
         self.indices = indices
         self.keys = list(keys)  # prevent OmegaConf list performance problem
         self.sequence_length = sequence_length
         self.replay_buffer = replay_buffer
         self.key_first_k = key_first_k
+        self.downsample_steps = downsample_steps
 
         # ImprovedDatasetSampler-specific initialization
         self.shape_meta = shape_meta
@@ -143,26 +186,29 @@ class ImprovedDatasetSampler:
 
     def sample_data(self, idx):
         buffer_start_idx, buffer_end_idx, sample_start_idx, sample_end_idx = self.indices[idx]
+        N = self.downsample_steps
+        n_sampled = sample_end_idx - sample_start_idx
         datagram = dict()
         datagram["obs"] = dict()
         for key in self.keys:
             input_arr = self.replay_buffer[key]
             # performance optimization, avoid small allocation if possible
             if key not in self.key_first_k:
-                sample = input_arr[buffer_start_idx:buffer_end_idx]
+                sample = input_arr[buffer_start_idx:buffer_end_idx:N]
             else:
                 # performance optimization, only load used obs steps
-                n_data = buffer_end_idx - buffer_start_idx
-                k_data = min(self.key_first_k[key], n_data)
+                k_data = min(self.key_first_k[key], n_sampled)
                 # fill value with NaN to catch bugs
                 # the non-loaded region should never be used
                 sample = np.full(
-                    (n_data,) + input_arr.shape[1:],
+                    (n_sampled,) + input_arr.shape[1:],
                     fill_value=np.nan,
                     dtype=input_arr.dtype,
                 )
                 try:
-                    sample[:k_data] = input_arr[buffer_start_idx : buffer_start_idx + k_data]
+                    sample[:k_data] = input_arr[
+                        buffer_start_idx : buffer_start_idx + (k_data - 1) * N + 1 : N
+                    ]
                 except Exception:
                     import pdb
                     pdb.set_trace()
