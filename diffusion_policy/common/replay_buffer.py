@@ -268,10 +268,8 @@ class ReplayBuffer:
         """
         Copy only selected episodes from an on-disk zarr into an in-memory ReplayBuffer.
 
-        Reads only the frame ranges belonging to the kept episodes, so both NFS read
-        volume and resident memory scale with the number of kept episodes rather than
-        the full dataset. The new buffer is contiguous: kept episodes are concatenated
-        in their original order, and ``meta/episode_ends`` is rebuilt accordingly.
+        The new buffer is contiguous: kept episodes are concatenated in their original order, 
+        `meta/episode_ends` is rebuilt accordingly.
 
         Args:
             zarr_path: Path to a source zarr store with the standard data/meta layout.
@@ -281,11 +279,6 @@ class ReplayBuffer:
 
         Returns:
             A ReplayBuffer wrapping the new in-memory zarr group.
-
-        Notes:
-            Source chunks straddling kept/unkept boundaries are read in full and then
-            sliced (zarr decompresses on read, recompresses on write). This costs a
-            small amount of CPU at load time but is paid once.
         """
         src_group = zarr.open(os.path.expanduser(zarr_path), mode="r")
         src_episode_ends = src_group["meta"]["episode_ends"][:]

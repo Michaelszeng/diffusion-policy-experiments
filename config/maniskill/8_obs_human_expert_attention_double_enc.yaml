@@ -11,16 +11,18 @@ checkpoint:
 dataloader:
   batch_size: 64
   num_workers: 8
-  persistent_workers: false
+  persistent_workers: true
   pin_memory: true
   shuffle: true
+  prefetch_factor: 1
 val_dataloader:
   batch_size: 64
   num_workers: 8
-  persistent_workers: false
+  persistent_workers: true
   pin_memory: true
   drop_last: true
   shuffle: true
+  prefetch_factor: 1
 ema:
   _target_: diffusion_policy.model.diffusion.ema_model.EMAModel
   inv_gamma: 1.0
@@ -32,15 +34,15 @@ exp_name: defaults
 logging:  # wandb logging configuration
   group: null
   id: null
-  name: 2_obs
+  name: 8_obs_human_expert_attention_double_enc
   project: maniskill_diffusion
   resume: false
 multi_run:
-  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_hybrid_maniskill_zarr
+  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_hybrid_maniskill_human_expert_attention_double_enc_8_obs
   run_dir: data/outputs/${multi_run.wandb_name_base}
-horizon: 16
+horizon: ${eval:${n_obs_steps} + 14}
 n_action_steps: 8
-n_obs_steps: 2
+n_obs_steps: 8
 shape_meta:
   action:
     shape:
@@ -63,7 +65,7 @@ shape_meta:
       - 3
       type: rgb
 policy:
-  _target_: diffusion_policy.policy.diffusion_unet_hybrid_image_targeted_policy.DiffusionUnetHybridImageTargetedPolicy
+  _target_: diffusion_policy.policy.diffusion_unet_hybrid_image_attention_policy.DiffusionUnetHybridImageAttentionPolicy
   diffusion_step_embed_dim: 128
   down_dims:
   - 256
@@ -75,6 +77,11 @@ policy:
   n_action_steps: ${n_action_steps}
   n_obs_steps: ${n_obs_steps}
   past_action_visible: false
+  num_attention_heads: 8
+  attention_dropout: 0.1
+  use_temporal_pos_emb: true
+  use_modality_emb: true
+  use_range_emb: true
   DDPM_noise_scheduler:
     _target_: diffusers.schedulers.scheduling_ddpm.DDPMScheduler
     beta_end: 0.02
@@ -86,9 +93,10 @@ policy:
     variance_type: fixed_small
   num_DDPM_inference_steps: 100
   num_DDIM_inference_steps: 10
-  use_target_cond: true
-  target_dim: 3  # goal T pose
   shape_meta: ${shape_meta}
+  inference_loading: false
+  short_range_obs_horizon: 2
+  short_range_dropout: 0.3
   obs_encoder:
     _target_: diffusion_policy.model.vision.robomimic_config_util.RobomimicObsEncoder
     shape_meta: ${shape_meta}
@@ -97,7 +105,14 @@ policy:
     crop_shape:
     - 112
     - 112
-  inference_loading: false
+  short_range_encoder:
+    _target_: diffusion_policy.model.vision.robomimic_config_util.RobomimicObsEncoder
+    shape_meta: ${shape_meta}
+    pretrained_encoder: false
+    freeze_encoder: false
+    crop_shape:
+    - 112
+    - 112
 task:
   dataset:
     _target_: diffusion_policy.dataset.maniskill_zarr_dataset.ManiskillZarrDataset
@@ -111,10 +126,14 @@ task:
     pad_before: ${eval:${task.dataset.n_obs_steps} - 1}
     seed: ${seed}
     zarr_configs:
-    - path: data/diffusion_experiments/maniskill/maniskill_planar_push_t.zarr
-      max_train_episodes: 285
-      sampling_weight: null
-      val_ratio: 0.01
+    - path: data/diffusion_experiments/maniskill/maniskill_planar_push_t_michael.zarr
+      max_train_episodes: null
+      sampling_weight: 0.5
+      val_ratio: 0.05
+    - path: data/diffusion_experiments/maniskill/maniskill_planar_push_t_abhinav.zarr
+      max_train_episodes: null
+      sampling_weight: 0.5
+      val_ratio: 0.05
   name: maniskill_scene
   shape_meta: ${shape_meta}
 task_name: maniskill
@@ -128,6 +147,7 @@ training:
   gradient_accumulate_every: 1
   lr_scheduler: cosine
   lr_warmup_steps: 500
+  encoder_lr_scale: 1.0
   max_train_steps: null
   max_val_steps: null
   total_train_steps: 200000

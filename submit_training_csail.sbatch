@@ -8,7 +8,7 @@
 #SBATCH --gpus-per-node=2
 #SBATCH --cpus-per-task=20
 #SBATCH --mem=256G
-#SBATCH --time=24:00:00
+#SBATCH --time=168:00:00
 #SBATCH --output=logs/slurm-%j.out
 #SBATCH --error=logs/slurm-%j.err
 #SBATCH --requeue
@@ -66,9 +66,9 @@ export HYDRA_FULL_ERROR=1
 # ============================================================================
 
 # --- Mundane ---
-EXPERIMENT_CLASS=mundane
+# EXPERIMENT_CLASS=mundane
 # EXPERIMENT_NAME=2_obs_pill_CLIP_film  # batch size 64, LR 1e-4, 2-GPU
-EXPERIMENT_NAME=8_obs_pill_CLIP_attention_double_enc  # batch size 64, LR 1e-4, 2-GPU
+# EXPERIMENT_NAME=8_obs_pill_CLIP_attention_double_enc  # batch size 64, LR 1e-4, 2-GPU
 
 # --- Planar Pushing ---
 # EXPERIMENT_CLASS=planar_pushing
@@ -92,8 +92,12 @@ EXPERIMENT_NAME=8_obs_pill_CLIP_attention_double_enc  # batch size 64, LR 1e-4, 
 # EXPERIMENT_NAME=14_obs_32_horizon_idle_frames_pruned
 # EXPERIMENT_NAME=18_obs_32_horizon_idle_frames_pruned
 
+# --- Maniskill ---
+# EXPERIMENT_CLASS=maniskill
+# EXPERIMENT_NAME=2_obs  # batch size 64, LR 1e-4
+
 # --- Furniture Bench ---
-# EXPERIMENT_CLASS=furniture_bench
+EXPERIMENT_CLASS=furniture_bench
 # EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m_only_imitation_juicer_data  # batch size 64, LR 1e-4
 
@@ -116,7 +120,7 @@ EXPERIMENT_NAME=8_obs_pill_CLIP_attention_double_enc  # batch size 64, LR 1e-4, 
 # EXPERIMENT_NAME=8_obs_one_leg_teleop_r3m_double_enc_scripted_non_markovian_1000_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=12_obs_one_leg_teleop_r3m_double_enc_scripted_non_markovian_1000_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=16_obs_one_leg_teleop_r3m_double_enc_scripted_non_markovian_1000_eps  # batch size 64, LR 1e-4
-# EXPERIMENT_NAME=20_obs_one_leg_teleop_r3m_double_enc_scripted_non_markovian_1000_eps  # batch size 64, LR 1e-4
+EXPERIMENT_NAME=20_obs_one_leg_teleop_r3m_double_enc_scripted_non_markovian_1000_eps  # batch size 64, LR 1e-4
 
 # EXPERIMENT_NAME=lowdim_2_obs_one_leg_scripted_r3m  # batch size 64, LR 1e-4
 

@@ -1,14 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=diffusion_policy_training
 #SBATCH --account=locomotion
-#SBATCH --partition=vision-shared-h100
-#SBATCH --qos=shared-if-available
+#SBATCH --partition=locomotion-h200
+#SBATCH --qos=locomotion-main
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=20
 #SBATCH --mem=256G
-#SBATCH --time=24:00:00
+#SBATCH --time=168:00:00
 #SBATCH --output=logs/slurm-%j.out
 #SBATCH --error=logs/slurm-%j.err
 #SBATCH --requeue
@@ -87,8 +87,12 @@ export HYDRA_FULL_ERROR=1
 # EXPERIMENT_NAME=14_obs_32_horizon_idle_frames_pruned
 # EXPERIMENT_NAME=18_obs_32_horizon_idle_frames_pruned
 
+# --- Maniskill ---
+EXPERIMENT_CLASS=maniskill
+EXPERIMENT_NAME=2_obs  # batch size 64, LR 1e-4
+
 # --- Furniture Bench ---
-EXPERIMENT_CLASS=furniture_bench
+# EXPERIMENT_CLASS=furniture_bench
 # EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m_only_imitation_juicer_data  # batch size 64, LR 1e-4
 
@@ -125,7 +129,7 @@ EXPERIMENT_CLASS=furniture_bench
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_125_200_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_25_200_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_0_5_200_eps  # batch size 64, LR 1e-4
-EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_1_0_200_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_dart_1_0_200_eps  # batch size 64, LR 1e-4
 
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_dart_0_200_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_dart_0_0625_200_eps  # batch size 64, LR 1e-4
