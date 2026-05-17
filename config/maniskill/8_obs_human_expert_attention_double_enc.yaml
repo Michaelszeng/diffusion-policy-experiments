@@ -125,6 +125,7 @@ task:
     pad_after: ${eval:${policy.horizon} - 1}
     pad_before: ${eval:${task.dataset.n_obs_steps} - 1}
     seed: ${seed}
+    downsample_steps: 2  # Dataset is recorded at 20 Hz; downsample to 10 Hz
     zarr_configs:
     - path: data/diffusion_experiments/maniskill/maniskill_planar_push_t_michael.zarr
       max_train_episodes: null
