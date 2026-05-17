@@ -1,13 +1,7 @@
 """
 Mundane bimanual-teleop dataset (e.g. ``pill_v1.zarr``).
 
-The Mundane zarr layout matches the standard ReplayBuffer layout
-(``data/<key>`` arrays + ``meta/episode_ends``) used everywhere else
-in this codebase, so the only thing that changes relative to
-``FurnitureBenchDataset`` is the set of available observation keys
-and the action dimensionality.
-
-Expected zarr layout (per pill_v1.zarr):
+Expected zarr layout:
     data/
         action                  (T, 14)            float32   # leader command
         action_follower         (T, 14)            float32   # follower-executed pose
@@ -68,17 +62,10 @@ shape_meta example for two cameras + dual-arm proprio:
         shape: [1]
 
 Notes:
-    * The action key used for supervision is selectable via
-      ``action_key`` (defaults to ``"action"``, the leader command).
-      Pass ``"action_follower"`` to train against the follower's
-      actually executed pose. The action is internally stored under
-      the standard ``"action"`` key in the in-memory ReplayBuffer so
-      downstream samplers, normalizers, and policies don't need to
-      know which source was used.
-    * Any zarr keys not listed in ``shape_meta.obs`` (e.g.
-      ``timestamps``, unused cameras, leader joints) are simply
-      skipped at load time, so memory usage scales with the
-      shape_meta you choose.
+    - The action key used for supervision is selectable via ``action_key`` (defaults to ``"action"``, the leader command).
+      Pass ``"action_follower"`` to train against the follower's actually executed pose. 
+      The action is internally stored under the standard ``"action"`` key in the in-memory ReplayBuffer so downstream 
+      samplers, normalizers, and policies don't need to know which source was used.
 """
 
 from typing import Dict, List, Optional
@@ -121,7 +108,14 @@ class MundaneDataset(BaseZarrImageDataset):
         val_ratio: float = 0.0,
         color_jitter: Optional[Dict] = None,
         action_key: str = "action",
+        downsample_steps: int = 1,
     ):
+        """
+        downsample_steps: Stride between successive frames inside a sampled
+            window. The Mundane zarrs are recorded at 30 Hz; set
+            ``downsample_steps: 3`` to train a 10 Hz policy (each obs/action
+            sequence is read with stride 3 from the buffer).
+        """
         if action_key not in VALID_ACTION_KEYS:
             raise ValueError(
                 f"action_key must be one of {VALID_ACTION_KEYS}, got '{action_key}'"
@@ -138,6 +132,7 @@ class MundaneDataset(BaseZarrImageDataset):
             seed=seed,
             val_ratio=val_ratio,
             color_jitter=color_jitter,
+            downsample_steps=downsample_steps,
         )
 
     def _get_buffer_keys(self) -> List[str]:

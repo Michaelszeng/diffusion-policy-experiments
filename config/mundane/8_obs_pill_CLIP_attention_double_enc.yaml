@@ -155,6 +155,7 @@ task:
     pad_before: ${eval:${task.dataset.n_obs_steps} - 1}
     seed: ${seed}
     action_key: action  # use "action_follower" to train against the executed-pose stream instead
+    downsample_steps: 3  # zarr is 30 Hz; stride 3 → policy sees 10 Hz obs/action sequences
     zarr_configs:
     - path: data/diffusion_experiments/mundane/pill_v1.zarr
       max_train_episodes: null  # 502 episodes total; ~5% held out for validation
