@@ -90,12 +90,12 @@ export HYDRA_FULL_ERROR=1
 # --- Maniskill ---
 EXPERIMENT_CLASS=maniskill
 # EXPERIMENT_NAME=2_obs_markovian_expert  # batch size 64, LR 1e-4
-# EXPERIMENT_NAME=2_obs_human_expert  # batch size 64, LR 1e-4
+EXPERIMENT_NAME=2_obs_human_expert  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=4_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=8_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=12_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
-EXPERIMENT_NAME=16_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=16_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=20_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
 
 # --- Furniture Bench ---
