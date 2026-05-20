@@ -1,8 +1,11 @@
 #!/bin/bash
 
 # Source directory on your computer
-SOURCE_DIR="data/outputs/furniture_bench/"
+# SOURCE_DIR="data/outputs/furniture_bench/"
 # SOURCE_DIR="data/outputs/robomimic/"
+SOURCE_DIR="data/outputs/maniskill/"
+
+
 
 # Target directory on the target computer
 # TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/furniture_bench/2_obs_one_leg_scripted_r3m"
@@ -12,7 +15,7 @@ SOURCE_DIR="data/outputs/furniture_bench/"
 # TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/furniture_bench/2_obs_one_leg_teleop"
 # TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/furniture_bench"
 
-TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/furniture_bench/2_obs_one_leg_scripted_r3m_dart_0_200_eps"
+# TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/furniture_bench/2_obs_one_leg_scripted_r3m_dart_0_200_eps"
 # TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/furniture_bench/2_obs_one_leg_scripted_r3m_dart_0_0625_200_eps"
 # TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/furniture_bench/2_obs_one_leg_scripted_r3m_dart_0_125_200_eps"
 # TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/furniture_bench/2_obs_one_leg_scripted_r3m_dart_0_25_200_eps"
@@ -30,6 +33,8 @@ TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/
 
 # TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/robomimic/2_obs_tool_hang_film"
 # TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/robomimic/8_obs_tool_hang_double_enc"
+
+TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/maniskill/2_obs_human_expert"
 
 # SOURCE_DIR="/home/michzeng/benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/scripted/low/"
 # TARGET_DIR="/data/locomotion/michzeng/benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/scripted/low/success_translated.zarr"

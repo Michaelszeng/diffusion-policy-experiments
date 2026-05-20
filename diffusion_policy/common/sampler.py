@@ -51,7 +51,7 @@ def create_indices(
         # Require at least (sequence_length - pad_after) in-bounds sample positions
         max_window_start = end_idx - (sequence_length - pad_after - 1) * N - 1
 
-        # Iterate over each absolute buffer index in the current episode
+        # Iterate over each window in the current episode
         for idx in range(min_window_start, max_window_start + 1):
             # Calculate idx (in the window) of the first valid frame in the sequence.
             # If the sequence starts before the episode, we skip those out-of-bounds frames.
