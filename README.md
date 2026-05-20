@@ -70,11 +70,27 @@ python prune_idle.py data/diffusion_experiments/planar_pushing/sim_sim_tee_data_
 
 
 ### Running locally:
+
+Edit the hyperparameters and `EXPERIMENT_CLASS` / `EXPERIMENT_NAME` at the top of `run_training_local.sh`, then run:
+```bash
+./run_training_local.sh
+```
+
+This wraps `accelerate launch train.py ...` and handles venv activation, WANDB auth (via `.secrets`), and single- or multi-GPU launching (set `NUM_GPUS` in the script).
+
+Or, to invoke `train.py` directly:
 ```bash
 python train.py --config-dir=config/planar_pushing --config-name=2_obs.yaml hydra.run.dir=data/outputs/planar_pushing/2_obs/ dataloader.batch_size=4 val_dataloader.batch_size=4
 ```
 
-Add `training.resume=True` to resume an existing run
+Add `training.resume=True` to resume an existing run.
+
+### Running on the CSAIL SLURM cluster:
+```bash
+sbatch submit_training_csail.sbatch
+```
+Edit the hyperparameters and `EXPERIMENT_CLASS` / `EXPERIMENT_NAME` at the top of `submit_training_csail.sbatch` before submitting.
+
 
 ### Running on Supercloud:
 ```bash
