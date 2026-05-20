@@ -7,7 +7,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=20
-#SBATCH --mem=256G
+#SBATCH --mem=240G
 #SBATCH --time=168:00:00
 #SBATCH --output=logs/slurm-%j.out
 #SBATCH --error=logs/slurm-%j.err
@@ -181,8 +181,23 @@ if [ "$USE_TORCH_COMPILE" = "true" ]; then
 fi
 
 
+NUM_GPUS=${SLURM_GPUS_ON_NODE:-1}
+# Derive a per-job rendezvous port so concurrent multi-GPU jobs on the same
+# node (or stale processes holding the default 29500) never collide.
+MAIN_PORT=$((20000 + SLURM_JOB_ID % 30000))
+if [ "$NUM_GPUS" -gt 1 ]; then
+    ACCELERATE_ARGS="--num_processes=$NUM_GPUS --multi_gpu --mixed_precision=bf16 --gpu_ids=all --main_process_port=$MAIN_PORT"
+else
+    ACCELERATE_ARGS="--num_processes=$NUM_GPUS --mixed_precision=bf16 --gpu_ids=all"
+fi
+echo "ACCELERATE_ARGS: $ACCELERATE_ARGS"
+
+# Extra debug while triaging multi-GPU launch issues; remove once stable.
+export NCCL_DEBUG=INFO
+export TORCH_DISTRIBUTED_DEBUG=DETAIL
+
 if [ -z "$CHECKPOINT_PATH" ] || [ "$CHECKPOINT_PATH" == "null" ]; then
-    exec python train.py \
+    accelerate launch $ACCELERATE_ARGS train.py \
         --config-dir=$CONFIG_DIR \
         --config-name=$CONFIG_NAME \
         hydra.run.dir=$HYDRA_RUN_DIR \
@@ -192,8 +207,9 @@ if [ -z "$CHECKPOINT_PATH" ] || [ "$CHECKPOINT_PATH" == "null" ]; then
         training.resume=$RESUME \
         training.mixed_precision=bf16 \
         $COMPILE_ARGS
+    rc=$?
 else
-    exec python train.py \
+    accelerate launch $ACCELERATE_ARGS train.py \
         --config-dir=$CONFIG_DIR \
         --config-name=$CONFIG_NAME \
         hydra.run.dir=$HYDRA_RUN_DIR \
@@ -204,4 +220,7 @@ else
         training.mixed_precision=bf16 \
         $COMPILE_ARGS \
         training.checkpoint_path=\"$CHECKPOINT_PATH\"
+    rc=$?
 fi
+echo "accelerate launch exit code: $rc"
+exit $rc

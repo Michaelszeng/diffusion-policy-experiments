@@ -78,6 +78,7 @@ class FurnitureBenchLowdimDataset(BaseZarrLowdimDataset):
         pad_after: int = 0,
         seed: int = 42,
         val_ratio: float = 0.0,
+        downsample_steps: int = 1,
     ):
         super().__init__(
             zarr_configs=zarr_configs,
@@ -88,6 +89,7 @@ class FurnitureBenchLowdimDataset(BaseZarrLowdimDataset):
             pad_after=pad_after,
             seed=seed,
             val_ratio=val_ratio,
+            downsample_steps=downsample_steps,
         )
 
         # One-time in-memory conversion: replace the quaternion-based parts_poses

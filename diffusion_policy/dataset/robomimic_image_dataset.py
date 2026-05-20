@@ -141,6 +141,7 @@ class RobomimicImageDataset(BaseZarrImageDataset):
         val_ratio: float = 0.02,
         max_train_episodes: Optional[int] = None,
         color_jitter: Optional[Dict] = None,
+        downsample_steps: int = 1,
     ):
         # BaseZarrImageDataset expects a list of zarr_configs dicts; we wrap
         # the single HDF5 path in that format and override load_replay_buffer
@@ -161,6 +162,7 @@ class RobomimicImageDataset(BaseZarrImageDataset):
             seed=seed,
             val_ratio=val_ratio,
             color_jitter=color_jitter,
+            downsample_steps=downsample_steps,
         )
 
     def _get_buffer_keys(self) -> List[str]:

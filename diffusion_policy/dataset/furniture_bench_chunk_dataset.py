@@ -66,6 +66,7 @@ class FurnitureBenchChunkDataset(BaseZarrImageDataset):
         seed: int = 42,
         val_ratio: float = 0.0,
         color_jitter: Optional[Dict] = None,
+        downsample_steps: int = 1,
     ):
         # Skip BaseZarrImageDataset.__init__: it builds samplers with sequence_length=horizon,
         # but we need sequence_length=n_obs_steps so buffer_end_idx-1 == current timestep t.
@@ -81,6 +82,7 @@ class FurnitureBenchChunkDataset(BaseZarrImageDataset):
         self.n_obs_steps = n_obs_steps
         self.pad_before = pad_before
         self.pad_after = 0
+        self.downsample_steps = downsample_steps
 
         buf_keys = self._get_buffer_keys()
 
@@ -122,6 +124,7 @@ class FurnitureBenchChunkDataset(BaseZarrImageDataset):
                 pad_after=0,
                 keys=buf_keys,
                 episode_mask=train_mask,
+                downsample_steps=downsample_steps,
             )
 
             self.replay_buffers.append(buf)

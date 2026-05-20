@@ -68,10 +68,12 @@ class ManiskillDataset(BaseImageDataset):
         camera_keys: List[str] = None,  # List of camera names to extract (e.g., ["base_camera"])
         clip_actions: bool = True,  # Clip actions to [-1, 1] range
         action_clip_range: tuple = (-1.0, 1.0),  # Min and max values for action clipping
+        downsample_steps: int = 1,
     ):
         super().__init__()
         self._validate_h5_configs(h5_configs)
         self._validate_state_mode_shape_consistency(state_mode, shape_meta)
+        assert downsample_steps >= 1, f"downsample_steps must be >= 1, got {downsample_steps}"
 
         # Low-pass filtering setup
         self.low_pass_on_wrist = low_pass_on_wrist
@@ -146,6 +148,7 @@ class ManiskillDataset(BaseImageDataset):
                 pad_after=pad_after,
                 episode_mask=train_mask,
                 key_first_k=key_first_k,
+                downsample_steps=downsample_steps,
             )
             self.samplers.append(sampler)
 
@@ -171,6 +174,7 @@ class ManiskillDataset(BaseImageDataset):
         self.shape_meta = shape_meta
         self.use_one_hot_encoding = use_one_hot_encoding
         self.one_hot_encoding = None  # if val dataset, this will not be None
+        self.downsample_steps = downsample_steps
 
     def load_replay_buffer(self, path: str, keys: List[str], config: Dict) -> ReplayBuffer:
         """Load one ManiSkill H5 file into a ReplayBuffer."""
@@ -274,6 +278,7 @@ class ManiskillDataset(BaseImageDataset):
                 pad_before=self.pad_before,
                 pad_after=self.pad_after,
                 episode_mask=self.val_masks[index],
+                downsample_steps=self.downsample_steps,
             )
         ]
 

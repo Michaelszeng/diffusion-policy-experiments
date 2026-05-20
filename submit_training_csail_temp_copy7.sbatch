@@ -5,9 +5,9 @@
 #SBATCH --qos=locomotion-main
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus-per-node=1
+#SBATCH --gpus-per-node=2
 #SBATCH --cpus-per-task=20
-#SBATCH --mem=256G
+#SBATCH --mem=240G
 #SBATCH --time=168:00:00
 #SBATCH --output=logs/slurm-%j.out
 #SBATCH --error=logs/slurm-%j.err
@@ -65,6 +65,11 @@ export HYDRA_FULL_ERROR=1
 # Experiment configuration
 # ============================================================================
 
+# --- Mundane ---
+EXPERIMENT_CLASS=mundane
+# EXPERIMENT_NAME=2_obs_pill_CLIP_film  # batch size 64, LR 1e-4, 2-GPU
+EXPERIMENT_NAME=8_obs_pill_CLIP_attention_double_enc  # batch size 64, LR 1e-4, 2-GPU
+
 # --- Planar Pushing ---
 # EXPERIMENT_CLASS=planar_pushing
 # EXPERIMENT_NAME=2_obs
@@ -87,8 +92,12 @@ export HYDRA_FULL_ERROR=1
 # EXPERIMENT_NAME=14_obs_32_horizon_idle_frames_pruned
 # EXPERIMENT_NAME=18_obs_32_horizon_idle_frames_pruned
 
+# --- Maniskill ---
+# EXPERIMENT_CLASS=maniskill
+# EXPERIMENT_NAME=2_obs  # batch size 64, LR 1e-4
+
 # --- Furniture Bench ---
-EXPERIMENT_CLASS=furniture_bench
+# EXPERIMENT_CLASS=furniture_bench
 # EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m_only_imitation_juicer_data  # batch size 64, LR 1e-4
 
@@ -118,7 +127,7 @@ EXPERIMENT_CLASS=furniture_bench
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_100_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_200_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_400_eps  # batch size 64, LR 1e-4
-EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_1000_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_1000_eps  # batch size 64, LR 1e-4
 
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_100_eps  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_scripted_r3m_non_markovian_200_eps  # batch size 64, LR 1e-4
@@ -185,9 +194,23 @@ if [ "$USE_TORCH_COMPILE" = "true" ]; then
     COMPILE_ARGS="training.use_torch_compile=true training.torch_compile_mode=$TORCH_COMPILE_MODE +dataloader.drop_last=true"
 fi
 
+NUM_GPUS=${SLURM_GPUS_ON_NODE:-1}
+# Derive a per-job rendezvous port so concurrent multi-GPU jobs on the same
+# node (or stale processes holding the default 29500) never collide.
+MAIN_PORT=$((20000 + SLURM_JOB_ID % 30000))
+if [ "$NUM_GPUS" -gt 1 ]; then
+    ACCELERATE_ARGS="--num_processes=$NUM_GPUS --multi_gpu --mixed_precision=bf16 --gpu_ids=all --main_process_port=$MAIN_PORT"
+else
+    ACCELERATE_ARGS="--num_processes=$NUM_GPUS --mixed_precision=bf16 --gpu_ids=all"
+fi
+echo "ACCELERATE_ARGS: $ACCELERATE_ARGS"
+
+# Extra debug while triaging multi-GPU launch issues; remove once stable.
+export NCCL_DEBUG=INFO
+export TORCH_DISTRIBUTED_DEBUG=DETAIL
 
 if [ -z "$CHECKPOINT_PATH" ] || [ "$CHECKPOINT_PATH" == "null" ]; then
-    exec python train.py \
+    accelerate launch $ACCELERATE_ARGS train.py \
         --config-dir=$CONFIG_DIR \
         --config-name=$CONFIG_NAME \
         hydra.run.dir=$HYDRA_RUN_DIR \
@@ -197,8 +220,9 @@ if [ -z "$CHECKPOINT_PATH" ] || [ "$CHECKPOINT_PATH" == "null" ]; then
         training.resume=$RESUME \
         training.mixed_precision=bf16 \
         $COMPILE_ARGS
+    rc=$?
 else
-    exec python train.py \
+    accelerate launch $ACCELERATE_ARGS train.py \
         --config-dir=$CONFIG_DIR \
         --config-name=$CONFIG_NAME \
         hydra.run.dir=$HYDRA_RUN_DIR \
@@ -209,4 +233,7 @@ else
         training.mixed_precision=bf16 \
         $COMPILE_ARGS \
         training.checkpoint_path=\"$CHECKPOINT_PATH\"
+    rc=$?
 fi
+echo "accelerate launch exit code: $rc"
+exit $rc

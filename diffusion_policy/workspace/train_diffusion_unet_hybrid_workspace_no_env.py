@@ -354,7 +354,14 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
                         if self.global_step % cfg.training.gradient_accumulate_every == 0:
                             grad_clip = getattr(cfg.training, "gradient_clip_val", None)
                             if grad_clip is not None:
-                                accelerator.clip_grad_norm_(self.model.parameters(), grad_clip)
+                                # NOTE: use torch's clip_grad_norm_ directly instead of
+                                # accelerator.clip_grad_norm_ to avoid a bug where Accelerate
+                                # calls scaler.unscale_() even when no GradScaler exists
+                                # (e.g. bf16 mixed precision), raising
+                                # AttributeError: 'NoneType' object has no attribute 'unscale_'.
+                                torch.nn.utils.clip_grad_norm_(
+                                    self.model.parameters(), grad_clip
+                                )
                             self.optimizer.step()
                             self.optimizer.zero_grad()
                             lr_scheduler.step()
