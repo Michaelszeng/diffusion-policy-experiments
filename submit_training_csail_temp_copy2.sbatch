@@ -1,13 +1,13 @@
 #!/bin/bash
 #SBATCH --job-name=diffusion_policy_training
 #SBATCH --account=locomotion
-#SBATCH --partition=vision-shared-h200
+#SBATCH --partition=csail-shared-h200
 #SBATCH --qos=shared-if-available
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=20
-#SBATCH --mem=240G
+#SBATCH --mem=128G
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/slurm-%j.out
 #SBATCH --error=logs/slurm-%j.err
@@ -88,15 +88,27 @@ export HYDRA_FULL_ERROR=1
 # EXPERIMENT_NAME=18_obs_32_horizon_idle_frames_pruned
 
 # --- Maniskill ---
-EXPERIMENT_CLASS=maniskill
+# EXPERIMENT_CLASS=maniskill
 # EXPERIMENT_NAME=2_obs_markovian_expert  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_human_expert  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=4_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=8_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
-EXPERIMENT_NAME=12_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=12_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=16_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=20_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
+
+# --- Furniture Bench ---
+EXPERIMENT_CLASS=furniture_bench_context_ablation
+# EXPERIMENT_NAME=20_obs_one_leg_scripted_r3m_non_markovian_100_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=20_obs_one_leg_scripted_r3m_non_markovian_200_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=20_obs_one_leg_scripted_r3m_non_markovian_400_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m_cross_attn_scripted_non_markovian_100_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=20_obs_one_leg_teleop_r3m_cross_attn_scripted_non_markovian_100_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m_cross_attn_scripted_non_markovian_200_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=20_obs_one_leg_teleop_r3m_cross_attn_scripted_non_markovian_200_eps  # batch size 64, LR 1e-4
+EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m_cross_attn_scripted_non_markovian_400_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=20_obs_one_leg_teleop_r3m_cross_attn_scripted_non_markovian_400_eps  # batch size 64, LR 1e-4
 
 # --- Furniture Bench ---
 # EXPERIMENT_CLASS=furniture_bench

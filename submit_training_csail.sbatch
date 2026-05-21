@@ -1,14 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=diffusion_policy_training
 #SBATCH --account=locomotion
-#SBATCH --partition=locomotion-h200
-#SBATCH --qos=locomotion-main
+#SBATCH --partition=csail-shared-h200
+#SBATCH --qos=shared-if-available
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=2
 #SBATCH --cpus-per-task=20
 #SBATCH --mem=240G
-#SBATCH --time=168:00:00
+#SBATCH --time=24:00:00
 #SBATCH --output=logs/slurm-%j.out
 #SBATCH --error=logs/slurm-%j.err
 #SBATCH --requeue

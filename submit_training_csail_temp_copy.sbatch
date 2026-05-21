@@ -87,10 +87,14 @@ export HYDRA_FULL_ERROR=1
 # EXPERIMENT_NAME=14_obs_32_horizon_idle_frames_pruned
 # EXPERIMENT_NAME=18_obs_32_horizon_idle_frames_pruned
 
+# --- Isaac Sim ---
+EXPERIMENT_CLASS=isaac_sim
+EXPERIMENT_NAME=2_obs_gear_assembly_human_expert  # batch size 64, LR 1e-4
+
 # --- Maniskill ---
-EXPERIMENT_CLASS=maniskill
-# EXPERIMENT_NAME=2_obs_markovian_expert  # batch size 64, LR 1e-4
-EXPERIMENT_NAME=2_obs_human_expert  # batch size 64, LR 1e-4
+# EXPERIMENT_CLASS=maniskill
+# EXPERIMENT_NAME=2_obs_markovian_expert_test  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_human_expert_test  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=4_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=8_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4

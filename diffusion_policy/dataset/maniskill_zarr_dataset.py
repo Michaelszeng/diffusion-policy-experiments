@@ -7,7 +7,7 @@ Expected zarr layout (per maniskill_planar_push_t.zarr):
         state             (T, 3)             float64   # robot ee state
         target            (T, 3)             float64   # goal T pose
         slider_state      (T, 3)             float64   # T (slider) pose
-        overhead_camera   (T, 128, 128, 3)   uint8
+        base_camera       (T, 128, 128, 3)   uint8
         wrist_camera      (T, 128, 128, 3)   uint8
     meta/
         episode_ends      (E,)               int64
