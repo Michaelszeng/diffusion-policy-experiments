@@ -3,8 +3,11 @@
 # SOURCE_DIR="/home/michzeng/Downloads/IsaacGym_Preview_4_Package.tar.gz"
 # TARGET_DIR="/data/locomotion/michzeng/"
 
-SOURCE_DIR="           /home/michzeng/ManiSkill/maniskill_planar_push_t_michael.zarr"
-TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/diffusion_experiments/maniskill/"
+SOURCE_DIR="                       /home/michzeng/diffusion-policy/data/diffusion_experiments/isaac_sim/gear_assembly_generated.zarr"
+TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/diffusion_experiments/isaac_sim/"
+
+# SOURCE_DIR="           /home/michzeng/ManiSkill/maniskill_planar_push_t_michael.zarr"
+# TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/diffusion_experiments/maniskill/"
 
 # SOURCE_DIR="           /home/michzeng/diffusion-policy/data/diffusion_experiments/robomimic/tool_hang/ph/image_v15.hdf5"
 # TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/diffusion_experiments/robomimic/tool_hang/ph/"
