@@ -1,0 +1,183 @@
+_target_: diffusion_policy.workspace.train_diffusion_unet_timm_workspace_no_env.TrainDiffusionUnetTimmWorkspaceNoEnv
+seed: 42
+checkpoint:
+  save_last_ckpt: true
+  save_last_snapshot: false
+  topk:  # Save top k checkpoints
+    format_str: epoch={epoch:03d}-val_loss={val_loss:.4f}-val_ddim_mse={val_ddim_mse:.6f}.ckpt
+    k: 5
+    mode: min
+    monitor_key: val_ddim_mse_0
+dataloader:
+  batch_size: 48
+  num_workers: 8
+  persistent_workers: True
+  pin_memory: true
+  shuffle: true
+  prefetch_factor: 1
+val_dataloader:
+  batch_size: 48
+  num_workers: 8
+  persistent_workers: True
+  pin_memory: true
+  drop_last: true  # Drop the last batch if it's not full
+  shuffle: true
+  prefetch_factor: 1
+ema:
+  _target_: diffusion_policy.model.diffusion.ema_model.EMAModel
+  inv_gamma: 1.0
+  max_value: 0.9999
+  min_value: 0.0
+  power: 0.75
+  update_after_step: 0
+exp_name: defaults
+logging:  # wandb logging configuration
+  group: null
+  id: null
+  name: mundane_2_obs_pill_v2_CLIP_film
+  project: mundane_pill
+multi_run:
+  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_timm_mundane_2_obs_pill_v2_CLIP_film
+  run_dir: data/outputs/${multi_run.wandb_name_base}
+horizon: ${eval:${n_obs_steps} + 14}
+n_action_steps: 8  # Inference-only parameter
+n_obs_steps: 2  # Number of observation steps to condition on
+shape_meta:
+  action:
+    shape:
+    - 14
+  obs:
+    # Three of the five available RealSense cameras in pill_v2.zarr.
+    # Images are stored HWC uint8 at 224x224 on disk; shape_meta declares
+    # the (C, H, W) format expected by the timm encoder.
+    camera_335122271682_rgb:
+      shape:
+      - 3
+      - 224
+      - 224
+      type: rgb
+    camera_230322274541_rgb:
+      shape:
+      - 3
+      - 224
+      - 224
+      type: rgb
+    camera_408322070972_rgb:
+      shape:
+      - 3
+      - 224
+      - 224
+      type: rgb
+    # Follower (robot-side) end-effector pose and gripper widths only.
+    # Per-arm: position (xyz) + orientation (roll, pitch, yaw) + gripper width.
+    # No torque, wrench, contact, joint angles, or leader-side proprio.
+    robot0_eef_pos:
+      shape:
+      - 3
+      type: low_dim
+    robot0_eef_rpy:
+      shape:
+      - 3
+      type: low_dim
+    robot1_eef_pos:
+      shape:
+      - 3
+      type: low_dim
+    robot1_eef_rpy:
+      shape:
+      - 3
+      type: low_dim
+    robot0_gripper_width:
+      shape:
+      - 1
+      type: low_dim
+    robot1_gripper_width:
+      shape:
+      - 1
+      type: low_dim
+policy:  # Parameters to be passed to policy (i.e. the _target_ policy class below)
+  _target_: diffusion_policy.policy.diffusion_unet_timm_film_policy.DiffusionUnetTimmFilmPolicy
+  shape_meta: ${shape_meta}
+  horizon: ${horizon}
+  obs_encoder:
+    _target_: diffusion_policy.model.vision.timm_obs_encoder.TimmObsEncoder
+    shape_meta: ${shape_meta}
+    model_name: vit_base_patch16_clip_224.openai
+    pretrained: true
+    n_obs_steps: ${n_obs_steps}
+    feature_aggregation: cls
+    crop_ratio: 0.9    # effective crop: floor(224*0.9 / 16) * 16 = 192px
+    imagenet_norm: true
+  noise_scheduler:
+    _target_: diffusers.schedulers.scheduling_ddpm.DDPMScheduler
+    beta_end: 0.02
+    beta_schedule: squaredcos_cap_v2
+    beta_start: 0.0001
+    clip_sample: true
+    num_train_timesteps: 100
+    prediction_type: epsilon
+    variance_type: fixed_small
+  num_DDPM_inference_steps: 100  # DDPM scheduler is used during training/validation
+  num_ddim_inference_steps: 10  # DDIM scheduler is used during inference
+  diffusion_step_embed_dim: 256
+  down_dims:
+  - 256
+  - 512
+  - 1024
+  kernel_size: 5  # kernel size (in time-dimension) for 1D convolutions in UNet
+  n_groups: 8  # Number of groups for group norm
+  input_pertub: 0.1
+task:
+  dataset:
+    _target_: diffusion_policy.dataset.mundane_dataset.MundaneDataset
+    shape_meta: ${shape_meta}
+    horizon: ${horizon}
+    n_obs_steps: ${n_obs_steps}
+    pad_after: ${eval:${policy.horizon} - 1}
+    pad_before: ${eval:${task.dataset.n_obs_steps} - 1}
+    seed: ${seed}
+    action_key: action  # use "action_follower" to train against the executed-pose stream instead
+    downsample_steps: 3  # zarr is 30 Hz; stride 3 → policy sees 10 Hz obs/action sequences
+    zarr_configs:
+    - path: data/diffusion_experiments/mundane/pill_v2.zarr
+      max_train_episodes: null  # 502 episodes total; ~5% held out for validation
+      sampling_weight: null
+      val_ratio: 0.01
+  name: mundane_pill
+  shape_meta: ${shape_meta}
+task_name: mundane_pill
+training:
+  mixed_precision: null  # bf16 or null
+  use_torch_compile: false
+  torch_compile_mode: default  # default | reduce-overhead | max-autotune
+  gradient_clip_val: 1.0  # max gradient norm; critical for bf16 stability
+  checkpoint_path: null
+  checkpoint_every: 5
+  debug: false
+  device: cuda
+  gradient_accumulate_every: 1
+  lr_scheduler: cosine
+  lr_warmup_steps: 500
+  max_train_steps: null  # per epoch training steps
+  max_val_steps: null
+  total_train_steps: 400000
+  num_epochs: null
+  resume: false
+  rollout_every: 5  # UNUSED -- no environment rollouts during training
+  sample_every: ${training.checkpoint_every}  # validation using DDPM output
+  seed: ${seed}
+  tqdm_interval_sec: 30.0
+  use_ema: true
+  val_every: 1
+  log_val_mse: true
+  eval_mse_DDPM: true
+  eval_mse_DDIM: true  # DDIM scheduler is used during inference
+  encoder_lr_scale: 0.1  # Scale down vision encoder LR relative to the rest of the model
+optimizer:
+  _target_: torch.optim.AdamW
+  betas:
+  - 0.95
+  - 0.999
+  eps: 1.0e-08
+  lr: 0.0001
+  weight_decay: 1.0e-06

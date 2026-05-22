@@ -92,7 +92,7 @@ class TimmObsEncoder(ModuleAttrMixin):
         patch_size = self.backbone.patch_embed.patch_size[0]
         if image_shape is not None:
             self.crop_size = (int(image_shape[0] * crop_ratio) // patch_size) * patch_size
-            self.center_crop = torchvision.transforms.CenterCrop(self.crop_size)
+            self.center_crop = torchvision.transforms.CenterCrop(self.crop_size)  # Build + store center crop for eval
 
         if imagenet_norm and pretrained and image_shape is not None:
             mean = data_cfg.get("mean", (0.485, 0.456, 0.406))
@@ -118,8 +118,7 @@ class TimmObsEncoder(ModuleAttrMixin):
         self.n_modalities: int = len(all_keys) + 1  # +1 to include the reserved index 0
 
         logger.info(
-            "TimmObsEncoder | backbone=%s feature_dim=%d rgb=%s lowdim=%s "
-            "n_obs_steps=%d n_modalities=%d",
+            "TimmObsEncoder | backbone=%s feature_dim=%d rgb=%s lowdim=%s n_obs_steps=%d n_modalities=%d",
             model_name,
             self.feature_dim,
             self.rgb_keys,
