@@ -11,8 +11,6 @@ import copy
 import os
 import pathlib
 import random
-from collections import defaultdict
-
 import dill
 import hydra
 import numpy as np
@@ -83,6 +81,9 @@ class TrainDiffusionUnetTimmWorkspaceNoEnv(BaseWorkspace):
                 f"rest = {cfg.optimizer.lr:.6f}"
             )
             encoder_params = list(self.model.obs_encoder.parameters())
+            short_range_enc = getattr(self.model, "short_range_encoder", None)
+            if short_range_enc is not None:
+                encoder_params += list(short_range_enc.parameters())
             encoder_param_ids = {id(p) for p in encoder_params}
             other_params = [p for p in self.model.parameters() if id(p) not in encoder_param_ids]
             optimizer_class = getattr(optim, cfg.optimizer._target_.split(".")[-1])
@@ -113,6 +114,7 @@ class TrainDiffusionUnetTimmWorkspaceNoEnv(BaseWorkspace):
             log_with="wandb",
             mixed_precision=mixed_precision,
             kwargs_handlers=[ddp_kwargs],
+            gradient_accumulation_steps=cfg.training.gradient_accumulate_every,
         )
 
         # Init W&B logging via accelerator (only logs on main process)
@@ -159,8 +161,17 @@ class TrainDiffusionUnetTimmWorkspaceNoEnv(BaseWorkspace):
         # For single-GPU: use the regular dataloader config directly.
         dataloader_cfg = OmegaConf.to_container(cfg.dataloader, resolve=True)
         if accelerator.num_processes > 1:
+            # batch_size in config is the global batch size; divide across GPUs.
+            global_bs = dataloader_cfg["batch_size"]
+            assert global_bs % accelerator.num_processes == 0, (
+                f"batch_size ({global_bs}) must be divisible by num_processes ({accelerator.num_processes})"
+            )
+            dataloader_cfg["batch_size"] = global_bs // accelerator.num_processes
+            accelerator.print(
+                f"Global batch size {global_bs} → {dataloader_cfg['batch_size']} per GPU "
+                f"× {accelerator.num_processes} GPUs"
+            )
             shuffle = dataloader_cfg.pop("shuffle", True)
-            drop_last = dataloader_cfg.pop("drop_last", True)
             train_sampler = DistributedSampler(
                 dataset,
                 num_replicas=accelerator.num_processes,
@@ -168,10 +179,10 @@ class TrainDiffusionUnetTimmWorkspaceNoEnv(BaseWorkspace):
                 shuffle=shuffle,
                 seed=cfg.training.seed,
             )
-            train_dataloader = DataLoader(dataset, sampler=train_sampler, drop_last=drop_last, **dataloader_cfg)
+            train_dataloader = DataLoader(dataset, sampler=train_sampler, **dataloader_cfg)
         else:
             train_sampler = None
-            train_dataloader = DataLoader(dataset, **cfg.dataloader)
+            train_dataloader = DataLoader(dataset, **dataloader_cfg)
 
         # Compute normalizer on the main process and save to disk, then all processes load it.
         normalizer_path = os.path.join(self.output_dir, "normalizer.pt")
@@ -181,7 +192,7 @@ class TrainDiffusionUnetTimmWorkspaceNoEnv(BaseWorkspace):
         accelerator.wait_for_everyone()
         normalizer = torch.load(normalizer_path)
 
-        # Configure validation datasets (not distributed — all processes see full val data)
+        # Validation runs on the main process only.
         self.num_datasets = dataset.get_num_datasets()
         self.sample_probabilities = dataset.get_sample_probabilities()
         val_dataloaders = []
@@ -328,34 +339,32 @@ class TrainDiffusionUnetTimmWorkspaceNoEnv(BaseWorkspace):
                     mininterval=cfg.training.tqdm_interval_sec,
                 ) as tepoch:
                     for batch_idx, batch in enumerate(tepoch):
-                        # Device transfer
+                        # Device transfer and preprocessing
                         batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
-                        # Reorder channels from HWC to CHW and normalize to [0, 1]
                         for key in dataset.rgb_keys:
                             batch["obs"][key] = torch.moveaxis(batch["obs"][key], -1, 2) / 255.0
 
-                        # Forward pass — DDP wrapper applies autocast from mixed_precision
-                        raw_loss = self.model(batch)
-                        loss = raw_loss / cfg.training.gradient_accumulate_every
-
-                        # Backward pass — accelerator handles gradient scaling (fp16 GradScaler)
-                        accelerator.backward(loss)
-
-                        # Step optimizer
-                        if self.global_step % cfg.training.gradient_accumulate_every == 0:
-                            grad_clip = getattr(cfg.training, "gradient_clip_val", None)
-                            if grad_clip is not None:
-                                accelerator.clip_grad_norm_(self.model.parameters(), grad_clip)
+                        with accelerator.accumulate(self.model):
+                            raw_loss = self.model(batch)
+                            accelerator.backward(raw_loss)
+                            # sync_gradients is True only at the accumulation boundary;
+                            # optimizer.step/zero_grad are no-ops on intermediate steps
+                            # because the optimizer was prepared by accelerate.
+                            if accelerator.sync_gradients:
+                                grad_clip = getattr(cfg.training, "gradient_clip_val", None)
+                                if grad_clip is not None:
+                                    accelerator.clip_grad_norm_(self.model.parameters(), grad_clip)
                             self.optimizer.step()
                             self.optimizer.zero_grad()
-                            lr_scheduler.step()
+                            if accelerator.sync_gradients:
+                                lr_scheduler.step()
+                                # Update EMA model weights
+                                if cfg.training.use_ema:
+                                    ema.step(unwrapped_model)
 
-                        # Update EMA model
-                        if cfg.training.use_ema:
-                            ema.step(unwrapped_model)
-
-                        # Logging
-                        raw_loss_cpu = raw_loss.item()
+                        # Logging — reduce across ranks so the logged value is the
+                        # true global mean, not just this process's shard loss.
+                        raw_loss_cpu = accelerator.reduce(raw_loss.detach(), reduction="mean").item()
                         tepoch.set_postfix(loss=raw_loss_cpu, refresh=False)
                         train_losses.append(raw_loss_cpu)
                         step_log = {
@@ -366,7 +375,7 @@ class TrainDiffusionUnetTimmWorkspaceNoEnv(BaseWorkspace):
                         }
 
                         is_last_batch = batch_idx == (len(train_dataloader) - 1)
-                        if not is_last_batch:
+                        if not is_last_batch and accelerator.sync_gradients:
                             # Log of last batch is combined with validation metrics below
                             accelerator.log(step_log, step=self.global_step)
                             if accelerator.is_main_process:
@@ -381,94 +390,93 @@ class TrainDiffusionUnetTimmWorkspaceNoEnv(BaseWorkspace):
                 # At the end of each epoch, replace train_loss with epoch average
                 step_log["train_loss"] = np.mean(train_losses)
 
-                # ── Validation ───────────────────────────────────────────────────
+                # ── Validation (main process only) ───────────────────────────────
                 # Use EMA model for evaluation if available, otherwise use unwrapped training model
                 eval_policy = self.ema_model if cfg.training.use_ema else unwrapped_model
                 eval_policy.eval()
 
-                if (self.epoch % cfg.training.val_every) == 0:
-                    with torch.no_grad():
-                        val_loss_per_dataset = []
-                        for dataset_idx in range(self.num_datasets):
-                            val_losses = []
-                            with tqdm.tqdm(
-                                val_dataloaders[dataset_idx],
-                                desc=f"Dataset {dataset_idx} validation, epoch {self.epoch}",
-                                leave=False,
-                                disable=not accelerator.is_main_process,
-                                mininterval=cfg.training.tqdm_interval_sec,
-                            ) as tepoch:
-                                for batch_idx, batch in enumerate(tepoch):
-                                    # Device transfer
-                                    batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
-                                    # Reorder channels from HWC to CHW to match robomimic's vision encoder
-                                    for key in dataset.rgb_keys:
-                                        batch["obs"][key] = torch.moveaxis(batch["obs"][key], -1, 2) / 255.0
-                                    if val_sampling_batches[dataset_idx] is None:
-                                        val_sampling_batches[dataset_idx] = batch
+                if accelerator.is_main_process:
+                    if (self.epoch % cfg.training.val_every) == 0:
+                        with torch.no_grad():
+                            val_loss_per_dataset = []
+                            for dataset_idx in range(self.num_datasets):
+                                val_losses = []
+                                with tqdm.tqdm(
+                                    val_dataloaders[dataset_idx],
+                                    desc=f"Dataset {dataset_idx} validation, epoch {self.epoch}",
+                                    leave=False,
+                                    mininterval=cfg.training.tqdm_interval_sec,
+                                ) as tepoch:
+                                    for batch_idx, batch in enumerate(tepoch):
+                                        # Device transfer
+                                        batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
+                                        # Reorder channels from HWC to CHW and normalize to [0, 1]
+                                        for key in dataset.rgb_keys:
+                                            batch["obs"][key] = torch.moveaxis(batch["obs"][key], -1, 2) / 255.0
+                                        if val_sampling_batches[dataset_idx] is None:
+                                            val_sampling_batches[dataset_idx] = batch
 
-                                    # Forward pass with explicit autocast to match training precision
-                                    # since eval_policy is not a DDP wrapper, autocast is not automatic
-                                    with torch.autocast(
-                                        device_type=device.type,
-                                        dtype=torch.bfloat16 if mixed_precision == "bf16" else torch.float16,
-                                        enabled=mixed_precision != "no",
-                                    ):
-                                        loss = eval_policy.compute_loss(batch)
-                                    val_losses.append(loss.item())
+                                        # Forward pass with explicit autocast to match training precision
+                                        # since eval_policy is not a DDP wrapper, autocast is not automatic
+                                        with torch.autocast(
+                                            device_type=device.type,
+                                            dtype=torch.bfloat16 if mixed_precision == "bf16" else torch.float16,
+                                            enabled=mixed_precision != "no",
+                                        ):
+                                            loss = eval_policy.compute_loss(batch)
+                                        val_losses.append(loss.item())
 
-                                    if (cfg.training.max_val_steps is not None) and batch_idx >= (
-                                        cfg.training.max_val_steps - 1
-                                    ):
-                                        break
+                                        if (cfg.training.max_val_steps is not None) and batch_idx >= (
+                                            cfg.training.max_val_steps - 1
+                                        ):
+                                            break
 
-                            if val_losses:
-                                val_loss = np.mean(val_losses)
-                                val_loss_per_dataset.append(val_loss)
-                                step_log[f"val_loss_{dataset_idx}"] = val_loss
+                                if val_losses:
+                                    val_loss = np.mean(val_losses)
+                                    val_loss_per_dataset.append(val_loss)
+                                    step_log[f"val_loss_{dataset_idx}"] = val_loss
 
-                        # Compute weighted aggregate validation loss across datasets
-                        overall_val_loss = sum(
-                            self.sample_probabilities[i] * val_loss_per_dataset[i]
-                            for i in range(self.num_datasets)
-                        )
-                        step_log["val_loss"] = overall_val_loss
-
-                # ── DDPM/DDIM clean action MSE validation ────────────────────────
-                if (self.epoch % cfg.training.sample_every) == 0 and cfg.training.log_val_mse:
-                    with torch.no_grad():
-                        val_ddpm_action_mses = []
-                        val_ddim_action_mses = []
-                        for dataset_idx in range(self.num_datasets):
-                            # Device transfer
-                            val_batch = dict_apply(
-                                val_sampling_batches[dataset_idx],
-                                lambda x: x.to(device, non_blocking=True),
-                            )
-                            val_gt_action = val_batch["action"]
-
-                            if cfg.training.eval_mse_DDPM:
-                                result = eval_policy.predict_action(val_batch["obs"], use_DDIM=False)
-                                mse = torch.nn.functional.mse_loss(result["action_pred"], val_gt_action)
-                                step_log[f"val_ddpm_mse_{dataset_idx}"] = mse.item()
-                                val_ddpm_action_mses.append(mse.item())
-
-                            if cfg.training.eval_mse_DDIM:
-                                result = eval_policy.predict_action(val_batch["obs"], use_DDIM=True)
-                                mse = torch.nn.functional.mse_loss(result["action_pred"], val_gt_action)
-                                step_log[f"val_ddim_mse_{dataset_idx}"] = mse.item()
-                                val_ddim_action_mses.append(mse.item())
-
-                        if cfg.training.eval_mse_DDPM and val_ddpm_action_mses:
-                            step_log["val_ddpm_mse"] = sum(
-                                self.sample_probabilities[i] * val_ddpm_action_mses[i]
+                            # Compute weighted aggregate validation loss across datasets
+                            overall_val_loss = sum(
+                                self.sample_probabilities[i] * val_loss_per_dataset[i]
                                 for i in range(self.num_datasets)
                             )
-                        if cfg.training.eval_mse_DDIM and val_ddim_action_mses:
-                            step_log["val_ddim_mse"] = sum(
-                                self.sample_probabilities[i] * val_ddim_action_mses[i]
-                                for i in range(self.num_datasets)
-                            )
+                            step_log["val_loss"] = overall_val_loss
+
+                    # ── DDPM/DDIM clean action MSE validation ────────────────────
+                    if (self.epoch % cfg.training.sample_every) == 0 and cfg.training.log_val_mse:
+                        with torch.no_grad():
+                            val_ddpm_action_mses = []
+                            val_ddim_action_mses = []
+                            for dataset_idx in range(self.num_datasets):
+                                val_batch = dict_apply(
+                                    val_sampling_batches[dataset_idx],
+                                    lambda x: x.to(device, non_blocking=True),
+                                )
+                                val_gt_action = val_batch["action"]
+
+                                if cfg.training.eval_mse_DDPM:
+                                    result = eval_policy.predict_action(val_batch["obs"], use_DDIM=False)
+                                    mse = torch.nn.functional.mse_loss(result["action_pred"], val_gt_action)
+                                    step_log[f"val_ddpm_mse_{dataset_idx}"] = mse.item()
+                                    val_ddpm_action_mses.append(mse.item())
+
+                                if cfg.training.eval_mse_DDIM:
+                                    result = eval_policy.predict_action(val_batch["obs"], use_DDIM=True)
+                                    mse = torch.nn.functional.mse_loss(result["action_pred"], val_gt_action)
+                                    step_log[f"val_ddim_mse_{dataset_idx}"] = mse.item()
+                                    val_ddim_action_mses.append(mse.item())
+
+                            if cfg.training.eval_mse_DDPM and val_ddpm_action_mses:
+                                step_log["val_ddpm_mse"] = sum(
+                                    self.sample_probabilities[i] * val_ddpm_action_mses[i]
+                                    for i in range(self.num_datasets)
+                                )
+                            if cfg.training.eval_mse_DDIM and val_ddim_action_mses:
+                                step_log["val_ddim_mse"] = sum(
+                                    self.sample_probabilities[i] * val_ddim_action_mses[i]
+                                    for i in range(self.num_datasets)
+                                )
 
                 # ── Checkpointing (main process only) ────────────────────────────
                 if (self.epoch % cfg.training.checkpoint_every) == 0 and accelerator.is_main_process:
