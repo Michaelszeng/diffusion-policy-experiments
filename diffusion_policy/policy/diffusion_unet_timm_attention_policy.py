@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, Optional
 
 import torch
 import torch.nn.functional as F
@@ -10,7 +10,7 @@ from diffusion_policy.model.common.normalizer import LinearNormalizer
 from diffusion_policy.model.diffusion.conditional_unet_1d_static_attention import (
     StaticAttentionConditionalUnet1D,
 )
-from diffusion_policy.model.vision.timm_obs_encoder import TimmObsEncoder
+from diffusion_policy.model.vision.timm_obs_encoder import TimmObsEncoder, _RANGE_SHORT
 from diffusion_policy.policy.base_image_policy import BaseImagePolicy
 
 
@@ -30,6 +30,9 @@ class DiffusionUnetTimmAttentionPolicy(BaseImagePolicy):
         noise_scheduler: DDPMScheduler,
         obs_encoder: TimmObsEncoder,
         horizon: int,
+        short_range_encoder: Optional[TimmObsEncoder] = None,
+        short_range_obs_horizon: Optional[int] = None,
+        short_range_dropout: float = 0.0,
         num_DDPM_inference_steps=None,
         num_ddim_inference_steps=10,
         diffusion_step_embed_dim=256,
@@ -78,6 +81,9 @@ class DiffusionUnetTimmAttentionPolicy(BaseImagePolicy):
         ddim_scheduler.set_timesteps(num_ddim_inference_steps)
 
         self.obs_encoder = obs_encoder
+        self.short_range_encoder = short_range_encoder
+        self.short_range_obs_horizon = short_range_obs_horizon
+        self.short_range_dropout = short_range_dropout
         self.noise_scheduler = noise_scheduler
         self.ddim_noise_scheduler = ddim_scheduler
         self.normalizer = LinearNormalizer()
@@ -92,9 +98,43 @@ class DiffusionUnetTimmAttentionPolicy(BaseImagePolicy):
         self.num_ddim_inference_steps = num_ddim_inference_steps
 
     def _encode_obs(self, nobs: Dict[str, torch.Tensor]):
-        """Returns tokens, positions, modalities, ranges from the obs encoder (dit mode)."""
+        """Returns tokens, positions, modalities, ranges from the obs encoder(s) (dit mode).
+
+        When a short_range_encoder is configured, the most recent short_range_obs_horizon
+        frames are also encoded and appended as SHORT-range tokens.  During training a
+        per-sample dropout mask zeroes out those tokens with probability short_range_dropout.
+        """
         enc = self.obs_encoder(nobs, output_format="dit")
-        return enc["tokens"], enc["positions"], enc["modality"], enc["range"]
+        tokens    = enc["tokens"]     # (B, N_long, D)
+        positions = enc["positions"]  # (B, N_long)
+        modalities = enc["modality"]  # (B, N_long)
+        ranges    = enc["range"]      # (B, N_long)
+
+        if self.short_range_encoder is not None:
+            h = self.short_range_obs_horizon
+            short_nobs = {k: v[:, -h:] for k, v in nobs.items()}
+            s_enc = self.short_range_encoder(short_nobs, output_format="dit")
+            s_tokens     = s_enc["tokens"]
+            s_positions  = s_enc["positions"]
+            s_modalities = s_enc["modality"]
+            # The policy knows this encoder is short-range; assign the tag here,
+            # not inside the encoder (which has no knowledge of its own role).
+            s_ranges = torch.full(
+                s_tokens.shape[:2], _RANGE_SHORT, dtype=torch.long, device=s_tokens.device
+            )
+
+            # Per-sample dropout: zero out all short-range tokens for dropped samples
+            if self.training and self.short_range_dropout > 0.0:
+                B = s_tokens.shape[0]
+                keep = (torch.rand(B, device=s_tokens.device) >= self.short_range_dropout)
+                s_tokens = s_tokens * keep.float().view(B, 1, 1)
+
+            tokens     = torch.cat([tokens,     s_tokens],     dim=1)
+            positions  = torch.cat([positions,  s_positions],  dim=1)
+            modalities = torch.cat([modalities, s_modalities], dim=1)
+            ranges     = torch.cat([ranges,     s_ranges],     dim=1)
+
+        return tokens, positions, modalities, ranges
 
     # ── Inference ──────────────────────────────────────────────────────────────
 

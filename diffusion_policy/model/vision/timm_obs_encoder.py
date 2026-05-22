@@ -14,8 +14,9 @@ from diffusion_policy.model.common.module_attr_mixin import ModuleAttrMixin
 logger = logging.getLogger(__name__)
 
 # Range index 0 is reserved for the diffusion timestep token (assigned internally by the UNet).
-# Observation tokens use 1=LONG range (default until short-range encoders are implemented).
+# Observation tokens: 1=LONG range (full horizon), 2=SHORT range (recent frames only).
 _RANGE_LONG = 1
+_RANGE_SHORT = 2
 
 
 class TimmObsEncoder(ModuleAttrMixin):
@@ -217,6 +218,7 @@ class TimmObsEncoder(ModuleAttrMixin):
             mod_list.append(
                 torch.full((B, self.n_obs_steps), self.key_to_modality[key], dtype=torch.long, device=device)
             )
+            # Return Long range by default. Policy should overwrite if short-range encoder is used.
             range_list.append(
                 torch.full((B, self.n_obs_steps), _RANGE_LONG, dtype=torch.long, device=device)
             )
