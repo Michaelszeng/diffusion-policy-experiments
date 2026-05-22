@@ -1,8 +1,9 @@
 #!/bin/bash
 #SBATCH --job-name=diffusion_policy_training
 #SBATCH --account=locomotion
-#SBATCH --partition=vision-shared-h100
+#SBATCH --partition=vision-shared-h200
 #SBATCH --qos=shared-if-available
+#SBATCH --exclude=tedrake-h200-1
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=1
@@ -92,8 +93,8 @@ export HYDRA_FULL_ERROR=1
 # EXPERIMENT_NAME=2_obs_gear_assembly_human_expert  # batch size 64, LR 1e-4
 
 # --- Maniskill ---
-# EXPERIMENT_CLASS=maniskill
-# EXPERIMENT_NAME=2_obs_markovian_expert_test  # batch size 64, LR 1e-4
+EXPERIMENT_CLASS=maniskill
+EXPERIMENT_NAME=2_obs_markovian_expert  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_human_expert_test  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=4_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
@@ -103,8 +104,8 @@ export HYDRA_FULL_ERROR=1
 # EXPERIMENT_NAME=20_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
 
 # --- Furniture Bench ---
-EXPERIMENT_CLASS=furniture_bench
-EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m_test  # batch size 64, LR 1e-4
+# EXPERIMENT_CLASS=furniture_bench
+# EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m_test  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m_only_imitation_juicer_data  # batch size 64, LR 1e-4
 
 # EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m_cross_attn  # batch size 64, LR 1e-4

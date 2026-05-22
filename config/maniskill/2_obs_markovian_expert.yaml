@@ -114,7 +114,7 @@ task:
     downsample_steps: 2  # Dataset is recorded at 20 Hz; downsample to 10 Hz
     zarr_configs:
     - path: data/diffusion_experiments/maniskill/maniskill_planar_push_t_rl_expert.zarr
-      max_train_episodes: 285
+      max_train_episodes: 570
       sampling_weight: null
       val_ratio: 0.01
   name: maniskill_scene
