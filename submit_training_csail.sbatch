@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=diffusion_policy_training
 #SBATCH --account=locomotion
-#SBATCH --partition=csail-shared-h200
+#SBATCH --partition=vision-shared-h100
 #SBATCH --qos=shared-if-available
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
