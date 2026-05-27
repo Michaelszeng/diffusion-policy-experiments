@@ -108,7 +108,7 @@ class TrainDiffusionUnetHybridWorkspaceNoEnv(BaseWorkspace):
 
         # Accelerator replaces: DataParallel, GradScaler, autocast, and wandb.init.
         # find_unused_parameters=False is the safe default; set True only if needed.
-        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
+        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
         accelerator = Accelerator(
             log_with="wandb",
             mixed_precision=mixed_precision,

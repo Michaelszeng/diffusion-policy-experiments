@@ -108,8 +108,7 @@ class TrainDiffusionUnetTimmWorkspaceNoEnv(BaseWorkspace):
         # Determine mixed precision from config ("no" / "fp16" / "bf16")
         mixed_precision = getattr(cfg.training, "mixed_precision", None) or "no"
 
-        # Accelerator replaces: DataParallel, GradScaler, autocast, and wandb.init.
-        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
+        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
         accelerator = Accelerator(
             log_with="wandb",
             mixed_precision=mixed_precision,
