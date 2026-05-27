@@ -23,7 +23,10 @@ normalization, expecting CHW input in [0, 255]. R3MObsEncoder divides to [0,1]
 for the camera transforms, then scales back to [0, 255] before calling the R3M backbone.
 """
 
-from typing import Dict, List, Optional, Tuple
+import contextlib
+import fcntl
+import os
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -72,9 +75,10 @@ class ResNetObsEncoder(nn.Module):
         freeze_encoder:            Freeze encoder weights (default False — fine-tune).
         projection_dim:    Projection output size per camera (default 128).
         use_groupnorm:     Replace BatchNorm2d with GroupNorm.
-        front_camera_key:  Key of the front-facing camera that receives random
-                           crop augmentation.  Defaults to the last sorted RGB
-                           key (i.e. "color_image2" for FurnitureBench).
+        front_camera_keys: Key or list of keys for fixed/scene cameras that receive
+                           crop augmentation.  Defaults to the last sorted RGB key
+                           (i.e. "color_image2" for FurnitureBench).  A single string
+                           is accepted for backward compatibility.
     """
 
     RESNET_OUT_DIM = 512  # ResNet18 global avg pool output
@@ -86,6 +90,8 @@ class ResNetObsEncoder(nn.Module):
         freeze_encoder: bool = False,
         projection_dim: int = 128,
         use_groupnorm: bool = True,
+        front_camera_keys: Optional[Union[str, List[str]]] = None,
+        # Deprecated alias kept for backward compatibility
         front_camera_key: Optional[str] = None,
     ):
         super().__init__()
@@ -99,15 +105,18 @@ class ResNetObsEncoder(nn.Module):
         )
         assert len(self.rgb_keys) > 0, "ResNetObsEncoder requires at least one RGB key"
 
-        # Identify front vs wrist cameras.
-        # Front camera gets random-crop augmentation; wrist gets resize only.
-        if front_camera_key is None:
-            # Default: last sorted key (color_image2 for FurnitureBench)
-            front_camera_key = self.rgb_keys[-1]
-        assert front_camera_key in self.rgb_keys, (
-            f"front_camera_key '{front_camera_key}' not in rgb_keys {self.rgb_keys}"
-        )
-        self.front_camera_key = front_camera_key
+        # Resolve front camera keys (support legacy single-key arg).
+        if front_camera_keys is None and front_camera_key is not None:
+            front_camera_keys = front_camera_key
+        if front_camera_keys is None:
+            front_camera_keys = self.rgb_keys[-1]
+        if isinstance(front_camera_keys, str):
+            front_camera_keys = [front_camera_keys]
+        for k in front_camera_keys:
+            assert k in self.rgb_keys, (
+                f"front_camera_keys entry '{k}' not in rgb_keys {self.rgb_keys}"
+            )
+        self.front_camera_keys: List[str] = list(front_camera_keys)
 
         # ── Per-camera encoders ────────────────────────────────────────────────
         self.encoders = nn.ModuleDict(
@@ -173,7 +182,7 @@ class ResNetObsEncoder(nn.Module):
         x = x.permute(0, 3, 1, 2).contiguous() / 255.0  # (B*T, C, H, W)
 
         # Camera-specific spatial transform + augmentation
-        is_front = key == self.front_camera_key
+        is_front = key in self.front_camera_keys
         if self.training:
             x = self.front_train_transform(x) if is_front else self.wrist_train_transform(x)
         else:
@@ -209,6 +218,32 @@ class ResNetObsEncoder(nn.Module):
         return torch.cat(features, dim=-1)
 
 
+@contextlib.contextmanager
+def _r3m_cache_lock():
+    """
+    File-lock the R3M cache directory across processes on the same node.
+
+    Upstream `r3m.load_r3m` has a TOCTOU race (`if not exists: makedirs`) plus an
+    unguarded `gdown.download` of the weights. Under `torchrun --nproc_per_node>1`
+    the two ranks hit these blocks in parallel: one wins the `mkdir`, the other
+    raises `FileExistsError`; both can also race to write `model.pt`. We serialize
+    the whole `load_r3m` call with a per-node file lock so only one rank performs
+    the actual download / directory creation at a time.
+    """
+    cache_root = os.path.join(os.path.expanduser("~"), ".r3m")
+    os.makedirs(cache_root, exist_ok=True)
+    # Pre-create the per-model dir so r3m's buggy `if not exists: makedirs` is skipped.
+    os.makedirs(os.path.join(cache_root, "r3m_18"), exist_ok=True)
+
+    lock_path = os.path.join(cache_root, "r3m_18.lock")
+    with open(lock_path, "w") as lock_fp:
+        fcntl.flock(lock_fp.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_fp.fileno(), fcntl.LOCK_UN)
+
+
 def _build_r3m_resnet18(freeze: bool) -> nn.Module:
     """
     Load the full R3M-pretrained ResNet18 model (Ego4D objective).
@@ -221,7 +256,8 @@ def _build_r3m_resnet18(freeze: bool) -> nn.Module:
     """
     from r3m import load_r3m
 
-    r3m = load_r3m("resnet18").module  # unwrap nn.DataParallel → R3M model
+    with _r3m_cache_lock():
+        r3m = load_r3m("resnet18").module  # unwrap nn.DataParallel → R3M model
 
     if freeze:
         for param in r3m.parameters():
@@ -244,14 +280,16 @@ class R3MObsEncoder(nn.Module):
     calling the backbone.
 
     Args:
-        shape_meta:       Hydra shape_meta dict (action + obs keys).
-        freeze_encoder:   Freeze backbone and projector weights (default False).
-        use_groupnorm:    Replace BatchNorm2d in the R3M backbone with GroupNorm.
-                          GroupNorm is stable under bf16 and small batch sizes;
-                          recommended when fine-tuning the backbone end-to-end.
-        projection_dim:   Projection output size per camera (default 128).
-        front_camera_key: Key of the front-facing camera. Defaults to the last sorted
-                          RGB key ("color_image2" for FurnitureBench).
+        shape_meta:        Hydra shape_meta dict (action + obs keys).
+        freeze_encoder:    Freeze backbone and projector weights (default False).
+        use_groupnorm:     Replace BatchNorm2d in the R3M backbone with GroupNorm.
+                           GroupNorm is stable under bf16 and small batch sizes;
+                           recommended when fine-tuning the backbone end-to-end.
+        projection_dim:    Projection output size per camera (default 128).
+        front_camera_keys: Key or list of keys for fixed/scene cameras that receive
+                           crop augmentation.  Defaults to the last sorted RGB key
+                           ("color_image2" for FurnitureBench).  A single string is
+                           accepted for backward compatibility.
     """
 
     R3M_OUT_DIM = 512  # R3M ResNet18 output dim
@@ -262,6 +300,8 @@ class R3MObsEncoder(nn.Module):
         freeze_encoder: bool = False,
         use_groupnorm: bool = False,
         projection_dim: int = 128,
+        front_camera_keys: Optional[Union[str, List[str]]] = None,
+        # Deprecated alias kept for backward compatibility
         front_camera_key: Optional[str] = None,
     ):
         super().__init__()
@@ -275,12 +315,18 @@ class R3MObsEncoder(nn.Module):
         )
         assert len(self.rgb_keys) > 0, "R3MObsEncoder requires at least one RGB key"
 
-        if front_camera_key is None:
-            front_camera_key = self.rgb_keys[-1]
-        assert front_camera_key in self.rgb_keys, (
-            f"front_camera_key '{front_camera_key}' not in rgb_keys {self.rgb_keys}"
-        )
-        self.front_camera_key = front_camera_key
+        # Resolve front camera keys (support legacy single-key arg).
+        if front_camera_keys is None and front_camera_key is not None:
+            front_camera_keys = front_camera_key
+        if front_camera_keys is None:
+            front_camera_keys = self.rgb_keys[-1]
+        if isinstance(front_camera_keys, str):
+            front_camera_keys = [front_camera_keys]
+        for k in front_camera_keys:
+            assert k in self.rgb_keys, (
+                f"front_camera_keys entry '{k}' not in rgb_keys {self.rgb_keys}"
+            )
+        self.front_camera_keys: List[str] = list(front_camera_keys)
 
         # ── Per-camera R3M backbones ───────────────────────────────────────────
         self.encoders = nn.ModuleDict(
@@ -346,7 +392,7 @@ class R3MObsEncoder(nn.Module):
         x = x.permute(0, 3, 1, 2).contiguous() / 255.0  # (B*T, C, H, W)
 
         # Camera-specific augmentation (operates on CHW float [0, 1])
-        is_front = key == self.front_camera_key
+        is_front = key in self.front_camera_keys
         if self.training:
             x = self.front_train_transform(x) if is_front else self.wrist_train_transform(x)
         else:
