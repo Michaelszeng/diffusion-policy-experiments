@@ -165,15 +165,23 @@ class DiffusionUnetHybridImageAttentionPolicy(BaseImagePolicy):
         """
         Initializes the obs encoder from a prior training run and optionally freezes it.
 
-        The checkpoint is expected to be a full model checkpoint saved by the training workspace,
-        where obs encoder weights are stored under the "module.obs_encoder.*" prefix.
+        The checkpoint is expected to be a full model checkpoint saved by the training workspace.
+        Newer checkpoints (saved by `train_diffusion_unet_hybrid_workspace_no_env.py` with
+        `state_dict_overrides={"model": unwrapped_model}`) store obs encoder weights under the
+        "obs_encoder.*" prefix. Older checkpoints saved from a DDP-wrapped model used
+        "module.obs_encoder.*". Both formats are supported.
         """
         # Load the full model checkpoint and extract only the obs_encoder sub-dict
         print(f"Loading obs encoder from {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         full_model_state_dict = checkpoint["state_dicts"]["model"]
 
-        prefix = "module.obs_encoder."
+        # Auto-detect prefix: newer (unwrapped) checkpoints use "obs_encoder.";
+        # older (DDP-wrapped) checkpoints use "module.obs_encoder.".
+        if any(k.startswith("module.obs_encoder.") for k in full_model_state_dict):
+            prefix = "module.obs_encoder."
+        else:
+            prefix = "obs_encoder."
         obs_encoder_state_dict = {
             key[len(prefix):]: value
             for key, value in full_model_state_dict.items()
