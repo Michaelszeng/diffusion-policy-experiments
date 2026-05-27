@@ -569,6 +569,12 @@ class StaticAttentionConditionalUnet1D(nn.Module):
 
             sample = sample.permute(0, 2, 1).contiguous()  # "b h t -> b t h"
             batch_size = sample.shape[0]
+            # Remember the original sequence length so we can restore it after up-sampling.
+            # With down_dims=[d0, d1, d2] the UNet performs two stride-2 downsamples and two
+            # stride-2 upsamples. For odd horizons (e.g. 17), ceil-division during the
+            # downsamples followed by exact 2x upsamples produces an output one element longer
+            # than the input (e.g. 17 -> 9 -> 5 -> 10 -> 18). We truncate at the end to undo this.
+            original_horizon = sample.shape[-1]
 
             (
                 cond_tokens,
@@ -668,6 +674,9 @@ class StaticAttentionConditionalUnet1D(nn.Module):
                     obs_token_mask=cond_obs_token_mask,
                 )
                 x = upsample(x)
+
+            if x.shape[-1] != original_horizon:
+                x = x[..., :original_horizon]
 
             x = self.final_conv(x)
             x = x.permute(0, 2, 1).contiguous()  # "b t h -> b h t"

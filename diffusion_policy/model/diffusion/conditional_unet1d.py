@@ -247,6 +247,9 @@ class ConditionalUnet1D(nn.Module):
         """
         # sample = einops.rearrange(sample, "b h t -> b t h")
         sample = sample.permute(0, 2, 1)
+        # Remember original horizon so odd-length inputs survive the down/up round-trip;
+        # see StaticAttentionConditionalUnet1D for details.
+        original_horizon = sample.shape[-1]
 
         # 1. time
         timesteps = timestep
@@ -307,6 +310,9 @@ class ConditionalUnet1D(nn.Module):
             x = resnet2(x, global_feature)
             x = upsample(x)
 
+        if x.shape[-1] != original_horizon:
+            x = x[..., :original_horizon]
+
         x = self.final_conv(x)
 
         # x = einops.rearrange(x, "b t h -> b h t")
@@ -337,6 +343,7 @@ class VariableConditionalUnet1D(ConditionalUnet1D):
         """
         # sample = einops.rearrange(sample, "b h t -> b t h")
         sample = sample.permute(0, 2, 1)
+        original_horizon = sample.shape[-1]
 
         # 1. time
         timesteps = timestep
@@ -399,6 +406,9 @@ class VariableConditionalUnet1D(ConditionalUnet1D):
                 x = x + h_local[1]
             x = resnet2(x, global_feature)
             x = upsample(x)
+
+        if x.shape[-1] != original_horizon:
+            x = x[..., :original_horizon]
 
         x = self.final_conv(x)
 
