@@ -127,10 +127,10 @@ task:
     seed: ${seed}
     downsample_steps: 2  # Dataset is recorded at 20 Hz; downsample to 10 Hz
     zarr_configs:
-    - path: data/diffusion_experiments/maniskill/maniskill_planar_push_t_teleop_merged_pruned.zarr
+    - path: data/diffusion_experiments/maniskill/maniskill_planar_push_t_teleop_merged_pruned_obs_horizon_4_idle_tol_0_0008.zarr
       max_train_episodes: null
       sampling_weight: null
-      val_ratio: 0.05
+      val_ratio: 0.01
   name: maniskill_scene
   shape_meta: ${shape_meta}
 task_name: maniskill

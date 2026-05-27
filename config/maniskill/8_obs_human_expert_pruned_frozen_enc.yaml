@@ -34,53 +34,38 @@ exp_name: defaults
 logging:  # wandb logging configuration
   group: null
   id: null
-  name: 2_obs_gear_assembly_human_expert
-  project: isaac_sim_diffusion
+  name: 8_obs_human_expert_pruned_frozen_enc
+  project: maniskill_diffusion
   resume: false
 multi_run:
-  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_hybrid_isaac_sim_2_obs_gear_assembly_human_expert
+  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_hybrid_maniskill_human_expert_pruned_frozen_enc_8_obs
   run_dir: data/outputs/${multi_run.wandb_name_base}
 horizon: ${eval:${n_obs_steps} + 14}
 n_action_steps: 8
-n_obs_steps: 2
+n_obs_steps: 8
 shape_meta:
   action:
     shape:
-    - 7  # 7D end-effector delta pose + gripper (from zarr "actions")
+    - 2  # 2D ee delta pose for planar push-T
   obs:
-    eef_pos:
+    agent_pos:
       shape:
-      - 3
+      - 3  # robot ee state from zarr "state" array
       type: low_dim
-    eef_quat:
+    base_camera:
       shape:
-      - 4
-      type: low_dim
-    gripper_pos:
-      shape:
-      - 2
-      type: low_dim
-    scene_cam_front:
-      shape:
-      - 240
-      - 320
+      - 128
+      - 128
       - 3
       type: rgb
-    wrist_cam:
+    wrist_camera:
       shape:
-      - 240
-      - 320
+      - 128
+      - 128
       - 3
       type: rgb
-    scene_cam_rear_left:
-      shape:
-      - 240
-      - 320
-      - 3
-      type: rgb
-    # joint_pos (shape 9) and joint_vel (shape 9) are also available in the zarr
 policy:
-  _target_: diffusion_policy.policy.diffusion_unet_hybrid_image_targeted_policy.DiffusionUnetHybridImageTargetedPolicy
+  _target_: diffusion_policy.policy.diffusion_unet_hybrid_image_attention_policy.DiffusionUnetHybridImageAttentionPolicy
   diffusion_step_embed_dim: 128
   down_dims:
   - 256
@@ -92,6 +77,11 @@ policy:
   n_action_steps: ${n_action_steps}
   n_obs_steps: ${n_obs_steps}
   past_action_visible: false
+  num_attention_heads: 8
+  attention_dropout: 0.1
+  use_temporal_pos_emb: true
+  use_modality_emb: true
+  use_range_emb: true
   DDPM_noise_scheduler:
     _target_: diffusers.schedulers.scheduling_ddpm.DDPMScheduler
     beta_end: 0.02
@@ -103,21 +93,21 @@ policy:
     variance_type: fixed_small
   num_DDPM_inference_steps: 100
   num_DDIM_inference_steps: 10
-  use_target_cond: false
-  target_dim: 3  # goal T pose
   shape_meta: ${shape_meta}
-  obs_encoder:
-    _target_: diffusion_policy.model.vision.r3m_config_util.R3MObsEncoder
-    shape_meta: ${shape_meta}
-    freeze_encoder: false
-    projection_dim: 128
-    front_camera_keys:
-    - scene_cam_front
-    - scene_cam_rear_left
+  self_trained_obs_encoder: "/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/maniskill/2_obs_human_expert/checkpoints/epoch=060-val_loss=0.0735-val_ddim_mse=0.091175.ckpt"  # For long context, we use a (frozen) pretrained obs encoder from short context
+  freeze_self_trained_obs_encoder: true
   inference_loading: false
+  obs_encoder:
+    _target_: diffusion_policy.model.vision.robomimic_config_util.RobomimicObsEncoder
+    shape_meta: ${shape_meta}
+    pretrained_encoder: false
+    freeze_encoder: false
+    crop_shape:
+    - 112
+    - 112
 task:
   dataset:
-    _target_: diffusion_policy.dataset.isaac_sim_dataset.IsaacSimZarrDataset
+    _target_: diffusion_policy.dataset.maniskill_zarr_dataset.ManiskillZarrDataset
     shape_meta: ${shape_meta}
     horizon: ${horizon}
     n_obs_steps: ${n_obs_steps}
@@ -127,19 +117,15 @@ task:
     pad_after: ${eval:${policy.horizon} - 1}
     pad_before: ${eval:${task.dataset.n_obs_steps} - 1}
     seed: ${seed}
-    downsample_steps: 1
+    downsample_steps: 2  # Dataset is recorded at 20 Hz; downsample to 10 Hz
     zarr_configs:
-    - path: /data/locomotion/michzeng/IsaacLab/datasets/gear_assembly_generated.zarr
-      max_train_episodes: 140
-      sampling_weight: 0.5
-      val_ratio: 0.05
-    - path: /data/locomotion/michzeng/IsaacLab/datasets/gear_assembly_source.zarr
-      max_train_episodes: 50
-      sampling_weight: 0.5
+    - path: data/diffusion_experiments/maniskill/maniskill_planar_push_t_teleop_merged_pruned_obs_horizon_4_idle_tol_0_0008.zarr
+      max_train_episodes: null
+      sampling_weight: null
       val_ratio: 0.01
-  name: isaac_sim_gear_assembly
+  name: maniskill_scene
   shape_meta: ${shape_meta}
-task_name: isaac_sim
+task_name: maniskill
 training:
   mixed_precision: bf16
   gradient_clip_val: 1.0
@@ -150,9 +136,10 @@ training:
   gradient_accumulate_every: 1
   lr_scheduler: cosine
   lr_warmup_steps: 500
+  encoder_lr_scale: 1.0
   max_train_steps: null
   max_val_steps: null
-  total_train_steps: 150000
+  total_train_steps: 300000
   num_epochs: null
   resume: false
   rollout_every: 5 # UNUSED -- no environment rollouts during training
