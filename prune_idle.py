@@ -1,9 +1,18 @@
 """
 Prune idle frames from zarr replay buffer datasets.
 
-A frame is classified as "idle" if it belongs to a sliding window of consecutive
-actions (of size obs_horizon + 1) where all actions in that window fit within a
-hypersphere of radius `idle_tolerance`. Episodes that are entirely idle are removed.
+A frame at index i is classified as "idle" if the pusher states
+s_i, s_{i+1}, ..., s_{i+obs_horizon} all fit within a hypersphere of radius
+`idle_tolerance` — meaning the actions taken at frames i through i+obs_horizon-1
+resulted in no meaningful motion (whether because no motion was commanded, or
+because friction / contact forces resisted the command). Only those first
+obs_horizon frames are pruned; s_{i+obs_horizon} serves as the witness state and
+is handled by the next overlapping window. Episodes that are entirely idle are
+removed.
+
+`idle_tolerance` is in the units of the state vector. For the planar-push task
+the state is [x, y, θ] in metres/radians, so 0.002 m ≈ 2 mm is a reasonable
+starting point.
 
 Expects the standard ReplayBuffer zarr layout (data/, meta/). For datasets with
 non-standard layouts (e.g. FurnitureBench), first translate them using the
@@ -13,7 +22,7 @@ Usage:
   python prune_idle.py data/diffusion_experiments/planar_pushing/sim_sim_tee_data_carbon_large.zarr
   python prune_idle.py data/diffusion_experiments/planar_pushing/sim_sim_tee_data_carbon_large.zarr --output data/diffusion_experiments/planar_pushing/sim_sim_tee_data_carbon_large_pruned.zarr
   python prune_idle.py data/diffusion_experiments/planar_pushing/sim_sim_tee_data_carbon_large.zarr data/diffusion_experiments/planar_pushing/sim_sim_tee_data_carbon_large_pruned.zarr --output data/diffusion_experiments/planar_pushing/sim_sim_tee_data_carbon_large_pruned_merged.zarr
-  python prune_idle.py data/diffusion_experiments/planar_pushing/sim_sim_tee_data_carbon_large.zarr --obs-horizon 3 --idle-tolerance 0.0015
+  python prune_idle.py data/diffusion_experiments/planar_pushing/sim_sim_tee_data_carbon_large.zarr --obs-horizon 3 --idle-tolerance 0.002
 """
 
 import os
@@ -38,8 +47,11 @@ from diffusion_policy.common.replay_buffer import ReplayBuffer
 
 def fits_within_radius(P, r):
     """
-    Check if a set of points fits within a hypersphere of radius r.
-    Used to determine whether an action sequence is "idle".
+    Check if a set of points fits within a hypersphere of radius r (any center).
+
+    Used to test whether a window of pusher states is "idle": if all states in
+    the window cluster within a ball of radius r, the robot did not move
+    meaningfully during that interval regardless of what was commanded.
     """
     P = np.asarray(P, dtype=np.float64)
     n = P.shape[0]
@@ -54,20 +66,20 @@ def fits_within_radius(P, r):
     diff = P[:, None, :] - P[None, :, :]
     dist2 = np.einsum("...i,...i->...", diff, diff)
 
-    # 1. Necessary condition: Diameter <= 2*r
+    # 1. Necessary condition: diameter <= 2r
     if np.any(dist2 > max_pair_dist2):
         return False
 
-    # 2. Sufficient condition: Fits in ball around centroid?
+    # 2. Sufficient condition: fits in ball around centroid?
     centroid = np.mean(P, axis=0)
     if np.all(np.sum((P - centroid) ** 2, axis=-1) <= r2):
         return True
 
-    # 3. Sufficient condition: Fits in ball around midpoint of diameter?
+    # 3. Sufficient condition: fits in ball around midpoint of widest pair?
     flat_idx = np.argmax(dist2)
     i, j = np.unravel_index(flat_idx, dist2.shape)
     midpoint = (P[i] + P[j]) * 0.5
-    if np.all(np.sum((P - midpoint)**2, axis=-1) <= r2):
+    if np.all(np.sum((P - midpoint) ** 2, axis=-1) <= r2):
         return True
 
     return False
@@ -77,29 +89,38 @@ def prune_episode(
     episode_data: Dict[str, np.ndarray],
     obs_horizon: int,
     idle_tolerance: float,
-    action_key: str = "action",
+    state_key: str = "state",
 ) -> Optional[Dict[str, np.ndarray]]:
     """
     Prune idle frames from a single episode.
-    
+
+    For each window of obs_horizon+1 consecutive pusher states, if all states fit
+    within a hypersphere of radius idle_tolerance the robot did not move during
+    that interval. The first obs_horizon frames of the window are pruned (their
+    actions caused no motion). The last state in the window is NOT pruned here —
+    it acts as the witness and will be handled by the next overlapping window if
+    the robot remains idle.
+
     Args:
         episode_data: Dict of numpy arrays for the episode
-        obs_horizon: Observation horizon for idle detection
-        idle_tolerance: Maximum radius for idle action detection
-        
+        obs_horizon: Look-ahead window size for idle detection
+        idle_tolerance: Maximum enclosing-ball radius (in state units) for idle detection
+        state_key: Dataset key for the pusher state used for idle detection
+
     Returns:
-        Pruned episode dict, or None if entire episode is idle
+        Pruned episode dict, or None if the entire episode is idle
     """
-    actions = episode_data[action_key]
-    episode_length = len(actions)
+    states = episode_data[state_key]
+    episode_length = len(states)
 
     # Initialize mask - keep all frames by default
     keep_mask = np.ones(episode_length, dtype=bool)
 
-    # Check each window for idle actions
     for i in range(episode_length - obs_horizon):
-        if fits_within_radius(actions[i : i + obs_horizon + 1], idle_tolerance):
-            keep_mask[i : i + obs_horizon + 1] = False
+        if fits_within_radius(states[i : i + obs_horizon + 1], idle_tolerance):
+            # Prune frames i..i+obs_horizon-1; their actions caused no motion.
+            # Frame i+obs_horizon is the witness state — do not prune it here.
+            keep_mask[i : i + obs_horizon] = False
 
     # Check if entire episode is idle
     if not np.any(keep_mask):
@@ -117,8 +138,8 @@ def prune_zarr(
     source_zarr_paths,
     output_zarr_path,
     obs_horizon: int = 2,
-    idle_tolerance: float = 0.003,
-    action_key: str = "action",
+    idle_tolerance: float = 0.002,
+    state_key: str = "state",
 ):
     start_time = time.time()
 
@@ -139,9 +160,9 @@ def prune_zarr(
         n_eps = source_buffer.n_episodes
         print(f"  Episodes: {n_eps}  |  Keys: {list(source_buffer.keys())}")
 
-        if action_key not in source_buffer.keys():
+        if state_key not in source_buffer.keys():
             raise ValueError(
-                f"Action key '{action_key}' not found in {source_path}. "
+                f"State key '{state_key}' not found in {source_path}. "
                 f"Available keys: {list(source_buffer.keys())}"
             )
 
@@ -150,15 +171,15 @@ def prune_zarr(
             episode_data = {key: source_buffer[key][ep_slice] for key in source_buffer.keys()}
 
             total_episodes_in += 1
-            total_frames_before += len(episode_data[action_key])
+            total_frames_before += len(episode_data[state_key])
 
-            pruned = prune_episode(episode_data, obs_horizon, idle_tolerance, action_key)
+            pruned = prune_episode(episode_data, obs_horizon, idle_tolerance, state_key)
 
             if pruned is None:
                 removed_episodes.append((source_path.name, ep_idx))
                 continue
 
-            total_frames_after += len(pruned[action_key])
+            total_frames_after += len(pruned[state_key])
             total_episodes_out += 1
 
             compressors = {k: ("disk" if v.ndim == 4 else "default") for k, v in pruned.items()}
@@ -217,14 +238,17 @@ def main():
     parser.add_argument(
         "--idle-tolerance",
         type=float,
-        default=0.003,
-        help="Idle action tolerance radius (default: 0.003).",
+        default=0.002,
+        help=(
+            "Enclosing-ball radius for idle state detection in state units "
+            "(default: 0.002 — roughly 2 mm for planar-push [x, y, θ] states)."
+        ),
     )
     parser.add_argument(
-        "--action-key",
+        "--state-key",
         type=str,
-        default="action",
-        help="Dataset key used for idle detection (default: action).",
+        default="state",
+        help="Dataset key for the pusher state used for idle detection (default: state).",
     )
 
     args = parser.parse_args()
@@ -239,14 +263,14 @@ def main():
 
     print(f"obs_horizon:    {args.obs_horizon}")
     print(f"idle_tolerance: {args.idle_tolerance}")
-    print(f"action_key:     {args.action_key}")
+    print(f"state_key:      {args.state_key}")
 
     prune_zarr(
         source_zarr_paths=source_paths,
         output_zarr_path=output_path,
         obs_horizon=args.obs_horizon,
         idle_tolerance=args.idle_tolerance,
-        action_key=args.action_key,
+        state_key=args.state_key,
     )
 
 
