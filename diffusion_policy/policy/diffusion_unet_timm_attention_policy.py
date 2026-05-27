@@ -104,7 +104,14 @@ class DiffusionUnetTimmAttentionPolicy(BaseImagePolicy):
         frames are also encoded and appended as SHORT-range tokens.  During training a
         per-sample dropout mask zeroes out those tokens with probability short_range_dropout.
         """
-        enc = self.obs_encoder(nobs, output_format="dit")
+        # The dataset returns each obs key with length == prediction horizon (because the
+        # sampler pads up to sequence_length); only the first n_obs_steps frames are real
+        # observations — the rest is NaN/zero padding from key_first_k. Slice down here so
+        # the encoder produces exactly n_keys * n_obs_steps tokens (matching the
+        # positions/modalities/ranges it generates from self.n_obs_steps).
+        To = self.obs_encoder.n_obs_steps
+        long_nobs = {k: v[:, :To] for k, v in nobs.items()}
+        enc = self.obs_encoder(long_nobs, output_format="dit")
         tokens    = enc["tokens"]     # (B, N_long, D)
         positions = enc["positions"]  # (B, N_long)
         modalities = enc["modality"]  # (B, N_long)
@@ -112,7 +119,9 @@ class DiffusionUnetTimmAttentionPolicy(BaseImagePolicy):
 
         if self.short_range_encoder is not None:
             h = self.short_range_obs_horizon
-            short_nobs = {k: v[:, -h:] for k, v in nobs.items()}
+            # Take the last h frames of the *valid* observation window, not the last h
+            # frames of the padded tensor (which would be NaN padding).
+            short_nobs = {k: v[:, To - h:To] for k, v in nobs.items()}
             s_enc = self.short_range_encoder(short_nobs, output_format="dit")
             s_tokens     = s_enc["tokens"]
             s_positions  = s_enc["positions"]
