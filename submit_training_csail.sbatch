@@ -1,13 +1,13 @@
 #!/bin/bash
 #SBATCH --job-name=diffusion_policy_training
 #SBATCH --account=locomotion
-#SBATCH --partition=vision-shared-h100
+#SBATCH --partition=vision-shared-a100
 #SBATCH --qos=shared-if-available
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=2
 #SBATCH --cpus-per-task=20
-#SBATCH --mem=256G
+#SBATCH --mem=252G
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/slurm-%j.out
 #SBATCH --error=logs/slurm-%j.err
@@ -66,9 +66,9 @@ export HYDRA_FULL_ERROR=1
 # ============================================================================
 
 # --- Mundane ---
-EXPERIMENT_CLASS=mundane
+# EXPERIMENT_CLASS=mundane
 # EXPERIMENT_NAME=2_obs_pill_CLIP_film  # batch size 64, LR 1e-4
-EXPERIMENT_NAME=8_obs_pill_CLIP_attention_double_enc  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=8_obs_pill_CLIP_attention_double_enc  # batch size 64, LR 1e-4
 
 # --- Maniskill ---
 # EXPERIMENT_CLASS=maniskill
@@ -108,6 +108,24 @@ EXPERIMENT_NAME=8_obs_pill_CLIP_attention_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=10_obs_32_horizon_idle_frames_pruned
 # EXPERIMENT_NAME=14_obs_32_horizon_idle_frames_pruned
 # EXPERIMENT_NAME=18_obs_32_horizon_idle_frames_pruned
+
+# --- Furniture Bench Context Ablation ---
+EXPERIMENT_CLASS=furniture_bench_context_ablation
+# EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m_cross_attn_scripted_non_markovian_100_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m_cross_attn_scripted_non_markovian_200_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m_cross_attn_scripted_non_markovian_400_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=12_obs_one_leg_teleop_r3m_cross_attn_scripted_non_markovian_100_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=12_obs_one_leg_teleop_r3m_cross_attn_scripted_non_markovian_200_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=12_obs_one_leg_teleop_r3m_cross_attn_scripted_non_markovian_400_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=12_obs_one_leg_scripted_r3m_non_markovian_100_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=12_obs_one_leg_scripted_r3m_non_markovian_200_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=12_obs_one_leg_scripted_r3m_non_markovian_400_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=20_obs_one_leg_teleop_r3m_cross_attn_scripted_non_markovian_100_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=20_obs_one_leg_teleop_r3m_cross_attn_scripted_non_markovian_200_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=20_obs_one_leg_teleop_r3m_cross_attn_scripted_non_markovian_400_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=20_obs_one_leg_scripted_r3m_non_markovian_100_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=20_obs_one_leg_scripted_r3m_non_markovian_200_eps  # batch size 64, LR 1e-4
+EXPERIMENT_NAME=20_obs_one_leg_scripted_r3m_non_markovian_400_eps  # batch size 64, LR 1e-4
 
 # --- Furniture Bench ---
 # EXPERIMENT_CLASS=furniture_bench
@@ -202,8 +220,16 @@ if [ "$USE_TORCH_COMPILE" = "true" ]; then
     COMPILE_ARGS="training.use_torch_compile=true training.torch_compile_mode=$TORCH_COMPILE_MODE +dataloader.drop_last=true"
 fi
 
+NUM_GPUS=$(echo $CUDA_VISIBLE_DEVICES | tr ',' '\n' | wc -l)
+echo "NUM_GPUS: $NUM_GPUS"
+
+# Pick a unique rendezvous port per SLURM job to avoid EADDRINUSE when
+# multiple torchrun jobs share a node on a shared partition (default is 29500).
+MASTER_PORT=$((20000 + SLURM_JOB_ID % 20000))
+echo "MASTER_PORT: $MASTER_PORT"
+
 if [ -z "$CHECKPOINT_PATH" ] || [ "$CHECKPOINT_PATH" == "null" ]; then
-    exec python train.py \
+    exec torchrun --nproc_per_node=$NUM_GPUS --master-port=$MASTER_PORT train.py \
         --config-dir=$CONFIG_DIR \
         --config-name=$CONFIG_NAME \
         hydra.run.dir=$HYDRA_RUN_DIR \
@@ -214,7 +240,7 @@ if [ -z "$CHECKPOINT_PATH" ] || [ "$CHECKPOINT_PATH" == "null" ]; then
         training.mixed_precision=bf16 \
         $COMPILE_ARGS
 else
-    exec python train.py \
+    exec torchrun --nproc_per_node=$NUM_GPUS --master-port=$MASTER_PORT train.py \
         --config-dir=$CONFIG_DIR \
         --config-name=$CONFIG_NAME \
         hydra.run.dir=$HYDRA_RUN_DIR \

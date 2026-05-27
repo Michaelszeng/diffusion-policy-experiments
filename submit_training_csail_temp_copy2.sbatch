@@ -1,14 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=diffusion_policy_training
 #SBATCH --account=locomotion
-#SBATCH --partition=locomotion-h200
-#SBATCH --qos=locomotion-main
+#SBATCH --partition=vision-shared-a100
+#SBATCH --qos=shared-if-available
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=1
-#SBATCH --cpus-per-task=20
-#SBATCH --mem=64G
-#SBATCH --time=120:00:00
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=128G
+#SBATCH --time=24:00:00
 #SBATCH --output=logs/slurm-%j.out
 #SBATCH --error=logs/slurm-%j.err
 #SBATCH --requeue
@@ -65,8 +65,18 @@ export HYDRA_FULL_ERROR=1
 # Experiment configuration
 # ============================================================================
 
+# --- Isaac Sim ---
+EXPERIMENT_CLASS=isaac_sim
+# EXPERIMENT_NAME=2_obs_gear_assembly_human_expert  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_gear_assembly_human_expert_attention_double_enc  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=4_obs_gear_assembly_human_expert_attention_double_enc  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=8_obs_gear_assembly_human_expert_attention_double_enc  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=12_obs_gear_assembly_human_expert_attention_double_enc  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=16_obs_gear_assembly_human_expert_attention_double_enc  # batch size 64, LR 1e-4
+EXPERIMENT_NAME=20_obs_gear_assembly_human_expert_attention_double_enc  # batch size 64, LR 1e-4
+
 # --- Maniskill ---
-EXPERIMENT_CLASS=maniskill
+# EXPERIMENT_CLASS=maniskill
 # EXPERIMENT_NAME=2_obs_markovian_expert  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_human_expert  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
@@ -74,7 +84,7 @@ EXPERIMENT_CLASS=maniskill
 # EXPERIMENT_NAME=8_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=12_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=16_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
-EXPERIMENT_NAME=20_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=20_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_human_expert_pruned_attention_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=4_obs_human_expert_pruned_attention_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=8_obs_human_expert_pruned_attention_double_enc  # batch size 64, LR 1e-4
@@ -103,6 +113,18 @@ EXPERIMENT_NAME=20_obs_human_expert_attention_double_enc  # batch size 64, LR 1e
 # EXPERIMENT_NAME=10_obs_32_horizon_idle_frames_pruned
 # EXPERIMENT_NAME=14_obs_32_horizon_idle_frames_pruned
 # EXPERIMENT_NAME=18_obs_32_horizon_idle_frames_pruned
+
+# --- Furniture Bench Context Ablation ---
+# EXPERIMENT_CLASS=furniture_bench_context_ablation
+# EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m_cross_attn_scripted_non_markovian_100_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m_cross_attn_scripted_non_markovian_200_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_one_leg_teleop_r3m_cross_attn_scripted_non_markovian_400_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=20_obs_one_leg_teleop_r3m_cross_attn_scripted_non_markovian_100_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=20_obs_one_leg_teleop_r3m_cross_attn_scripted_non_markovian_200_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=20_obs_one_leg_teleop_r3m_cross_attn_scripted_non_markovian_400_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=20_obs_one_leg_scripted_r3m_non_markovian_100_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=20_obs_one_leg_scripted_r3m_non_markovian_200_eps  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=20_obs_one_leg_scripted_r3m_non_markovian_400_eps  # batch size 64, LR 1e-4
 
 # --- Furniture Bench ---
 # EXPERIMENT_CLASS=furniture_bench
