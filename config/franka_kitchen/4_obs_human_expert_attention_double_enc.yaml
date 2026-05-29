@@ -124,7 +124,7 @@ task:
     pad_before: ${eval:${task.dataset.n_obs_steps} - 1}
     seed: ${seed}
     zarr_configs:
-    - path: /home/michzeng/relay-policy-learning/kitchen_demos.zarr
+    - path: /data/locomotion/michzeng/relay-policy-learning/kitchen_demos.zarr
       max_train_episodes: null
       sampling_weight: 1.0
       val_ratio: 0.03

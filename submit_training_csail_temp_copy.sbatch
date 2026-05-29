@@ -1,14 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=diffusion_policy_training
 #SBATCH --account=locomotion
-#SBATCH --partition=locomotion-h200
-#SBATCH --qos=locomotion-main
+#SBATCH --partition=vision-shared-a100
+#SBATCH --qos=shared-if-available
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus-per-node=1
+#SBATCH --gpus-per-node=2
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=252G
-#SBATCH --time=168:00:00
+#SBATCH --mem=128G
+#SBATCH --time=24:00:00
 #SBATCH --output=logs/slurm-%j.out
 #SBATCH --error=logs/slurm-%j.err
 #SBATCH --requeue
@@ -65,6 +65,13 @@ export HYDRA_FULL_ERROR=1
 # Experiment configuration
 # ============================================================================
 
+# --- Franka Kitchen ---
+EXPERIMENT_CLASS=franka_kitchen
+# EXPERIMENT_NAME=2_obs_human_expert  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=4_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
+EXPERIMENT_NAME=8_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
+
 # --- Isaac Sim ---
 # EXPERIMENT_CLASS=isaac_sim
 # EXPERIMENT_NAME=2_obs_gear_assembly_human_expert  # batch size 64, LR 1e-4
@@ -76,7 +83,7 @@ export HYDRA_FULL_ERROR=1
 # EXPERIMENT_NAME=20_obs_gear_assembly_human_expert_attention_double_enc  # batch size 64, LR 1e-4
 
 # --- Maniskill ---
-EXPERIMENT_CLASS=maniskill
+# EXPERIMENT_CLASS=maniskill
 # EXPERIMENT_NAME=2_obs_markovian_expert  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_human_expert  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=2_obs_human_expert_attention_double_enc  # batch size 64, LR 1e-4
@@ -91,7 +98,7 @@ EXPERIMENT_CLASS=maniskill
 # EXPERIMENT_NAME=12_obs_human_expert_pruned_attention_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=16_obs_human_expert_pruned_attention_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=20_obs_human_expert_pruned_attention_double_enc  # batch size 64, LR 1e-4
-EXPERIMENT_NAME=2_obs_human_expert_pruned_frozen_enc  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=2_obs_human_expert_pruned_frozen_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=4_obs_human_expert_pruned_frozen_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=8_obs_human_expert_pruned_frozen_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=12_obs_human_expert_pruned_frozen_enc  # batch size 64, LR 1e-4

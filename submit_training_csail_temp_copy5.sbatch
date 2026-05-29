@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=diffusion_policy_training
 #SBATCH --account=locomotion
-#SBATCH --partition=csail-shared-h200
+#SBATCH --partition=vision-shared-a100
 #SBATCH --qos=shared-if-available
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus-per-node=1
+#SBATCH --gpus-per-node=2
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
 #SBATCH --time=24:00:00
@@ -68,8 +68,9 @@ export HYDRA_FULL_ERROR=1
 # --- Isaac Sim ---
 EXPERIMENT_CLASS=isaac_sim
 # EXPERIMENT_NAME=2_obs_gear_assembly_human_expert  # batch size 64, LR 1e-4
+
 # EXPERIMENT_NAME=2_obs_gear_assembly_human_expert_attention_double_enc  # batch size 64, LR 1e-4
-EXPERIMENT_NAME=3_obs_gear_assembly_human_expert_attention_double_enc  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=3_obs_gear_assembly_human_expert_attention_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=4_obs_gear_assembly_human_expert_attention_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=5_obs_gear_assembly_human_expert_attention_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=6_obs_gear_assembly_human_expert_attention_double_enc  # batch size 64, LR 1e-4
@@ -77,6 +78,12 @@ EXPERIMENT_NAME=3_obs_gear_assembly_human_expert_attention_double_enc  # batch s
 # EXPERIMENT_NAME=12_obs_gear_assembly_human_expert_attention_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=16_obs_gear_assembly_human_expert_attention_double_enc  # batch size 64, LR 1e-4
 # EXPERIMENT_NAME=20_obs_gear_assembly_human_expert_attention_double_enc  # batch size 64, LR 1e-4
+
+EXPERIMENT_NAME=2_obs_gear_assembly_human_expert_attention_double_enc_1000_demos  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=3_obs_gear_assembly_human_expert_attention_double_enc_1000_demos  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=4_obs_gear_assembly_human_expert_attention_double_enc_1000_demos  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=5_obs_gear_assembly_human_expert_attention_double_enc_1000_demos  # batch size 64, LR 1e-4
+# EXPERIMENT_NAME=6_obs_gear_assembly_human_expert_attention_double_enc_1000_demos  # batch size 64, LR 1e-4
 
 # --- Maniskill ---
 # EXPERIMENT_CLASS=maniskill
