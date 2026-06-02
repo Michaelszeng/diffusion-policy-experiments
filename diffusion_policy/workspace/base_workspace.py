@@ -295,14 +295,36 @@ def _filter_unexpected_keys(state_dict, module):
     submodules (e.g. mask_generator) that have since been removed from the
     model definition.  Dropped keys are reported as warnings rather than
     silently ignored or raised as errors.
+
+    Submodules subclassing ``DictOfTensorMixin`` (e.g. ``LinearNormalizer``)
+    are populated lazily from the checkpoint — their ``state_dict()`` is empty
+    at instantiation time, so naively filtering would strip every entry they
+    own. We exempt the ``params_dict.*`` subtree of any such submodule from
+    filtering and let its custom ``_load_from_state_dict`` consume those keys.
     """
     import warnings
     if not isinstance(state_dict, dict):
         return state_dict
     if not hasattr(module, "state_dict"):
         return state_dict
+
+    # Collect prefixes for DictOfTensorMixin subtrees whose params_dict is
+    # populated from the incoming state dict rather than from module init.
+    try:
+        from diffusion_policy.model.common.dict_of_tensor_mixin import DictOfTensorMixin
+        dynamic_prefixes = tuple(
+            (name + "." if name else "") + "params_dict."
+            for name, sub in module.named_modules()
+            if isinstance(sub, DictOfTensorMixin)
+        )
+    except Exception:
+        dynamic_prefixes = tuple()
+
+    def _is_dynamic(k):
+        return bool(dynamic_prefixes) and k.startswith(dynamic_prefixes)
+
     model_keys = set(module.state_dict().keys())
-    unexpected = [k for k in state_dict if k not in model_keys]
+    unexpected = [k for k in state_dict if k not in model_keys and not _is_dynamic(k)]
     if unexpected:
         warnings.warn(
             f"Checkpoint contains {len(unexpected)} unexpected key(s) that will be "
@@ -310,4 +332,4 @@ def _filter_unexpected_keys(state_dict, module):
             UserWarning,
             stacklevel=4,
         )
-    return {k: v for k, v in state_dict.items() if k in model_keys}
+    return {k: v for k, v in state_dict.items() if k in model_keys or _is_dynamic(k)}

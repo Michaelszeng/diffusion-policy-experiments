@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, Optional
 
 import torch
 import torch.nn.functional as F
@@ -10,6 +10,7 @@ from diffusion_policy.model.common.normalizer import LinearNormalizer
 from diffusion_policy.model.diffusion.conditional_unet1d import ConditionalUnet1D
 from diffusion_policy.model.vision.timm_obs_encoder import TimmObsEncoder
 from diffusion_policy.policy.base_image_policy import BaseImagePolicy
+from diffusion_policy.policy.rtc_utils import build_rtc_tensors, pigdm_eps_correction
 
 
 class DiffusionUnetTimmFilmPolicy(BaseImagePolicy):
@@ -85,6 +86,10 @@ class DiffusionUnetTimmFilmPolicy(BaseImagePolicy):
         global_cond=None,
         use_ddim=False,
         generator=None,
+        rtc_target=None,
+        rtc_weights=None,
+        rtc_max_guidance_weight=5.0,
+        rtc_sigma_d=1.0,
         **kwargs,
     ):
         if use_ddim:
@@ -100,6 +105,14 @@ class DiffusionUnetTimmFilmPolicy(BaseImagePolicy):
             device=inpaint_data.device,
             generator=generator,
         )
+
+        # ── RTC (ΠGDM guidance) path ──────────────────────────────────────────
+        if rtc_target is not None:
+            return self._rtc_conditional_sample(
+                scheduler, trajectory, global_cond,
+                rtc_target, rtc_weights, rtc_max_guidance_weight, rtc_sigma_d,
+                generator=generator, **kwargs,
+            )
 
         for t in scheduler.timesteps.to(trajectory.device).long():
             # Inpaint: overwrite known positions with correctly-noised inpaint values so
@@ -117,8 +130,52 @@ class DiffusionUnetTimmFilmPolicy(BaseImagePolicy):
         trajectory = torch.where(inpaint_mask, inpaint_data, trajectory)
         return trajectory
 
-    def predict_action(self, obs_dict: Dict[str, torch.Tensor], use_DDIM=False, **kwargs) -> Dict[str, torch.Tensor]:
+    def _rtc_conditional_sample(
+        self, scheduler, trajectory, global_cond,
+        rtc_target, rtc_weights, rtc_max_guidance_weight, rtc_sigma_d,
+        generator=None, **kwargs,
+    ):
+        """ΠGDM-guided reverse diffusion (FiLM conditioning). ``rtc_target`` is (B, P, A) and
+        ``rtc_weights`` is (P,), both pre-placed in the full prediction-horizon frame. The
+        FiLM ``global_cond`` is detached so backward flows only through the UNet."""
+        alphas_cumprod = scheduler.alphas_cumprod.to(trajectory.device)
+        global_cond = global_cond.detach() if global_cond is not None else None
 
+        for t in scheduler.timesteps.to(trajectory.device).long():
+            abar = alphas_cumprod[t]
+            x_t = trajectory.detach().requires_grad_(True)
+            with torch.enable_grad():
+                model_output = self.model(x_t, t, global_cond=global_cond)
+                eps_cond = pigdm_eps_correction(
+                    x_t, model_output, abar, rtc_target, rtc_weights,
+                    rtc_max_guidance_weight, rtc_sigma_d,
+                )
+            trajectory = scheduler.step(
+                eps_cond, t, x_t.detach(), generator=generator, **kwargs
+            ).prev_sample
+
+        # ΠGDM is a soft constraint — no final hard snap (document Algorithm 3).
+        return trajectory
+
+    def predict_action(
+        self,
+        obs_dict: Dict[str, torch.Tensor],
+        use_DDIM: bool = False,
+        rtc_target: Optional[torch.Tensor] = None,
+        rtc_inference_delay: Optional[int] = None,
+        rtc_execution_horizon: Optional[int] = None,
+        rtc_schedule: str = "exp",
+        rtc_max_guidance_weight: float = 5.0,
+        rtc_sigma_d: float = 1.0,
+        **kwargs,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Predict an action sequence. obs_dict[k] is (B, T, ...); normalized internally.
+
+        RTC (ΠGDM real-time chunking): when ``rtc_target`` is provided it is the NORMALIZED
+        previous-chunk target for the future-action window, shape (B, H, A) with
+        H = prediction_horizon - (n_obs_steps - 1). See rtc_utils for the guidance math.
+        """
         mixed_precision = getattr(self, "mixed_precision", None) or "no"
         with torch.autocast(
             device_type=self.device.type,
@@ -137,11 +194,25 @@ class DiffusionUnetTimmFilmPolicy(BaseImagePolicy):
             )
             inpaint_mask = torch.zeros_like(inpaint_data, dtype=torch.bool)
 
+            # Build full-horizon RTC target/weights from the future-window target (if any).
+            target_full, weights_full = build_rtc_tensors(
+                rtc_target, B, self.obs_encoder.n_obs_steps, self.prediction_horizon,
+                self.action_dim, rtc_inference_delay, rtc_execution_horizon, rtc_schedule,
+                self.device, self.dtype,
+            )
+            if target_full is not None:
+                global_cond = global_cond.detach()  # free encoder graph; cond is forward-only
+
+            # DDIM/DDPM denoising loop with FiLM-style global conditioning.
             nsample = self.conditional_sample(
                 inpaint_data=inpaint_data,
                 inpaint_mask=inpaint_mask,
                 global_cond=global_cond,
                 use_ddim=use_DDIM,
+                rtc_target=target_full,
+                rtc_weights=weights_full,
+                rtc_max_guidance_weight=rtc_max_guidance_weight,
+                rtc_sigma_d=rtc_sigma_d,
             )
             assert nsample.shape == (B, self.prediction_horizon, self.action_dim)
             return {"action_pred": self.normalizer["action"].unnormalize(nsample)}

@@ -77,6 +77,7 @@ class PolicyInferenceNode:
         device: str,
         num_ddim_inference_steps: int = 10,
         use_ddim: bool = True,
+        gripper_multiplier: float = 1.5,
     ):
         # Load checkpoint (accept either a .ckpt or a run dir) and dump the cfg.
         self.ckpt_path = ckpt_path
@@ -132,6 +133,10 @@ class PolicyInferenceNode:
             f"short_range_obs_horizon={self.short_range_obs_horizon}"
         )
 
+        self.gripper_multiplier = float(gripper_multiplier)
+        if self.gripper_multiplier != 1.0:
+            print(f"gripper_multiplier={self.gripper_multiplier} (applied to action gripper columns)")
+
         self.ip = ip
         self.port = port
 
@@ -144,6 +149,59 @@ class PolicyInferenceNode:
             raise ValueError("cv2.imdecode returned None — bad PNG payload.")
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         return torch.from_numpy(img).permute(2, 0, 1).contiguous().float().div(255.0).to(self.device)
+
+    def _build_rtc_kwargs(self, request: dict) -> dict:
+        """Translate the optional ``request["rtc"]`` block into predict_action kwargs.
+
+        The client sends ``prev_action_chunk`` in EEF execution space (7D one-arm or 14D
+        bimanual: [pose(6), grip(1)] per arm). We map it into the model's action space:
+          - gripper models (action_dim 7/14): reverse the post-inference gripper_multiplier;
+          - no-gripper models (action_dim 6/12): drop the gripper column(s).
+        Then normalize into the space the diffusion runs in. Returns {} when no rtc block.
+        """
+        rtc = request.get("rtc")
+        if rtc is None:
+            return {}
+
+        prev = np.asarray(rtc["prev_action_chunk"], dtype=np.float32)  # (H, 7) or (H, 14)
+        if prev.ndim != 2:
+            raise ValueError(f"prev_action_chunk must be (H, D); got shape {prev.shape}.")
+        A = int(self.policy.action_dim)
+        g = self.gripper_multiplier
+
+        if prev.shape[1] == 7:
+            if A == 7:
+                prev = prev.copy()
+                if g != 1.0:
+                    prev[:, 6] /= g
+            elif A == 6:
+                prev = prev[:, :6].copy()
+            else:
+                raise ValueError(f"7D prev_action_chunk incompatible with model action_dim={A}.")
+        elif prev.shape[1] == 14:
+            if A == 14:
+                prev = prev.copy()
+                if g != 1.0:
+                    prev[:, 6] /= g
+                    prev[:, 13] /= g
+            elif A == 12:
+                prev = np.concatenate([prev[:, :6], prev[:, 7:13]], axis=1)
+            else:
+                raise ValueError(f"14D prev_action_chunk incompatible with model action_dim={A}.")
+        else:
+            raise ValueError(f"prev_action_chunk dim {prev.shape[1]} not in (7, 14).")
+
+        assert prev.shape[1] == A, (prev.shape, A)
+        target = torch.from_numpy(prev).float().unsqueeze(0).to(self.device)  # (1, H, A)
+        target = self.policy.normalizer["action"].normalize(target)
+        return {
+            "rtc_target": target,
+            "rtc_inference_delay": int(rtc["inference_delay"]),
+            "rtc_execution_horizon": int(rtc["execution_horizon"]),
+            "rtc_schedule": str(rtc["prefix_attention_schedule"]),
+            "rtc_max_guidance_weight": float(rtc["max_guidance_weight"]),
+            "rtc_sigma_d": float(rtc.get("sigma_d", 1.0)),
+        }
 
     # ── Inference ──────────────────────────────────────────────────────────────
 
@@ -176,16 +234,34 @@ class PolicyInferenceNode:
 
         # Run the cache-aware policy: it normalizes obs, encodes only raw frames, then DDIM/DDPM denoising.
         raw_obs_dict = {**nobs_rgb_raw, **nobs_lowdim_full}
-        with torch.inference_mode():
+        rtc_kwargs = self._build_rtc_kwargs(request)
+        # RTC needs autograd for the ΠGDM VJP, so it cannot run under inference_mode.
+        grad_ctx = torch.enable_grad() if rtc_kwargs else torch.no_grad()
+        with grad_ctx:
             result = self.policy.predict_action(
                 raw_obs_dict,
                 cached_long=cached_long,
                 cached_short=cached_short,
                 use_DDIM=self.use_ddim,
+                **rtc_kwargs,
             )
 
         # Drop the first n_obs_steps - 1 entries (past-token predictions); return the future actions.
         action = result["action_pred"][0].detach().cpu().numpy()[T - 1:]
+
+        # Apply gripper multiplier (action layout: 7D=[pose(6), grip(1)],
+        # 14D=[poseL(6), gripL(1), poseR(6), gripR(1)]; 6D/12D are no-gripper).
+        if self.gripper_multiplier != 1.0 and action.ndim == 2:
+            action = action.copy()
+            if action.shape[1] == 7:
+                action[:, 6] *= self.gripper_multiplier
+            elif action.shape[1] == 14:
+                action[:, 6] *= self.gripper_multiplier
+                action[:, 13] *= self.gripper_multiplier
+            elif action.shape[1] in (6, 12):
+                pass  # no-gripper action; nothing to scale
+            else:
+                print(f"WARNING: unrecognized action shape {action.shape}; gripper multiplier not applied.")
 
         # Convert newly-encoded features (per-key lists of tensors) to per-key lists of ndarrays.
         new_features_long = {key: [v.detach().cpu().numpy() for v in vs] for key, vs in result["new_features_long"].items()}
@@ -228,7 +304,9 @@ class PolicyInferenceNode:
 @click.option("--device", default="cuda:0", help="Device to run on")
 @click.option("--steps", default=10, type=int, help="Number of DDIM inference steps")
 @click.option("--ddpm", is_flag=True, help="Use DDPM sampler instead of DDIM")
-def main(input, ip, port, device, steps, ddpm):
+@click.option("--gripper-multiplier", default=1.5, type=float,
+              help="Scale factor applied to gripper columns of returned action. Default: 1.5. Pass 1.0 to disable.")
+def main(input, ip, port, device, steps, ddpm, gripper_multiplier):
     node = PolicyInferenceNode(
         ckpt_path=input,
         ip=ip,
@@ -236,6 +314,7 @@ def main(input, ip, port, device, steps, ddpm):
         device=device,
         num_ddim_inference_steps=steps,
         use_ddim=not ddpm,
+        gripper_multiplier=gripper_multiplier,
     )
     node.run_node()
 
