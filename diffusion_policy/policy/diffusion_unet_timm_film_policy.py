@@ -1,4 +1,4 @@
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import torch
 import torch.nn.functional as F
@@ -160,6 +160,8 @@ class DiffusionUnetTimmFilmPolicy(BaseImagePolicy):
     def predict_action(
         self,
         obs_dict: Dict[str, torch.Tensor],
+        cached_long: Optional[Dict[str, List[torch.Tensor]]] = None,
+        cached_short: Optional[Dict[str, List[torch.Tensor]]] = None,
         use_DDIM: bool = False,
         rtc_target: Optional[torch.Tensor] = None,
         rtc_inference_delay: Optional[int] = None,
@@ -170,24 +172,61 @@ class DiffusionUnetTimmFilmPolicy(BaseImagePolicy):
         **kwargs,
     ) -> Dict[str, torch.Tensor]:
         """
-        Predict an action sequence. obs_dict[k] is (B, T, ...); normalized internally.
+        Predict an action sequence.
+
+        Standard path (cached_long is None): obs_dict[k] is (B, T, ...); normalized internally.
 
         RTC (ΠGDM real-time chunking): when ``rtc_target`` is provided it is the NORMALIZED
         previous-chunk target for the future-action window, shape (B, H, A) with
         H = prediction_horizon - (n_obs_steps - 1). See rtc_utils for the guidance math.
+
+        Cache-aware path (cached_long provided): B=1 inference. obs_dict[rgb_key] is a
+        List[Tensor (C,H,W)] of raw un-normalized frames at the newest positions;
+        obs_dict[lowdim_key] is a (1, T, dim) un-normalized tensor. cached_long[k] is
+        List[Tensor (D,)] of cached features (in encoder space — produced by a prior call)
+        at the oldest positions. cached_short is accepted for API symmetry with the
+        attention policy but unused (FiLM has no short-range encoder). The response carries
+        'new_features_long' (per-key lists of newly-encoded features) and an empty
+        'new_features_short'.
         """
+        del cached_short  # FiLM has no short-range encoder
+        cache_mode = cached_long is not None
+
         mixed_precision = getattr(self, "mixed_precision", None) or "no"
         with torch.autocast(
             device_type=self.device.type,
             dtype=torch.bfloat16 if mixed_precision == "bf16" else torch.float16,
             enabled=mixed_precision != "no",
         ):
-            nobs = self.normalizer.normalize(obs_dict)
-            B = next(iter(nobs.values())).shape[0]
-            # Keep only the n_obs_steps real frames (see compute_loss for why).
-            To = self.obs_encoder.n_obs_steps
-            nobs = {k: v[:, :To] for k, v in nobs.items()}
-            global_cond = self.obs_encoder(nobs, output_format="cat")
+            if cache_mode:
+                # Normalize raw obs. RGB keys are lists of (C,H,W) tensors that need stacking
+                # before the normalizer accepts them, then unstacking back for the encoder.
+                nobs: Dict[str, torch.Tensor] = {}
+                for k in self.obs_encoder.rgb_keys:
+                    raws = obs_dict[k]
+                    if raws:
+                        stacked = torch.stack(raws, dim=0).unsqueeze(0)  # (1, n_raw, C, H, W)
+                        normalized = self.normalizer.normalize({k: stacked})[k]
+                        nobs[k] = [normalized[0, i] for i in range(len(raws))]
+                    else:
+                        nobs[k] = []
+                for k in self.obs_encoder.low_dim_keys:
+                    nobs[k] = self.normalizer.normalize({k: obs_dict[k]})[k]
+                B = 1
+                global_cond, new_long = self.obs_encoder.encode_with_cache(
+                    nobs_rgb_raw={k: nobs[k] for k in self.obs_encoder.rgb_keys},
+                    nobs_lowdim_full={k: nobs[k] for k in self.obs_encoder.low_dim_keys},
+                    cached_rgb=cached_long,
+                    output_format="cat",
+                )
+            else:
+                nobs = self.normalizer.normalize(obs_dict)
+                B = next(iter(nobs.values())).shape[0]
+                # Keep only the n_obs_steps real frames (see compute_loss for why).
+                To = self.obs_encoder.n_obs_steps
+                nobs = {k: v[:, :To] for k, v in nobs.items()}
+                global_cond = self.obs_encoder(nobs, output_format="cat")
+                new_long: Dict[str, List[torch.Tensor]] = {}
 
             inpaint_data = torch.zeros(
                 B, self.prediction_horizon, self.action_dim, device=self.device, dtype=self.dtype
@@ -215,7 +254,12 @@ class DiffusionUnetTimmFilmPolicy(BaseImagePolicy):
                 rtc_sigma_d=rtc_sigma_d,
             )
             assert nsample.shape == (B, self.prediction_horizon, self.action_dim)
-            return {"action_pred": self.normalizer["action"].unnormalize(nsample)}
+
+            result = {"action_pred": self.normalizer["action"].unnormalize(nsample)}
+            if cache_mode:
+                result["new_features_long"] = new_long
+                result["new_features_short"] = {}  # FiLM has no short-range encoder
+            return result
 
     # ── Training ───────────────────────────────────────────────────────────────
 
