@@ -189,7 +189,7 @@ class TrainDiffusionUnetTimmWorkspaceNoEnv(BaseWorkspace):
             normalizer = dataset.get_normalizer()
             torch.save(normalizer, normalizer_path)
         accelerator.wait_for_everyone()
-        normalizer = torch.load(normalizer_path)
+        normalizer = torch.load(normalizer_path, weights_only=False)
 
         # Validation runs on the main process only.
         self.num_datasets = dataset.get_num_datasets()

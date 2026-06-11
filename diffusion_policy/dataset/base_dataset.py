@@ -1,10 +1,14 @@
 import copy
 import os
+import pathlib
+import shutil
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 import zarr
+from filelock import FileLock
 from torchvision import transforms
 
 from diffusion_policy.common.normalize_util import get_image_range_normalizer
@@ -12,6 +16,58 @@ from diffusion_policy.common.replay_buffer import ReplayBuffer
 from diffusion_policy.common.sampler import ImprovedDatasetSampler, downsample_mask, get_val_mask
 from diffusion_policy.model.common.normalizer import LinearNormalizer
 from diffusion_policy.common.normalize_util import get_image_passthrough_normalizer
+
+
+def _zarr_cache_filename(zarr_path: str, suffix: str = "") -> str:
+    """Build a cache filename stem from a zarr path and its mtime.
+
+    The mtime makes the cache self-invalidating: if the source zarr is rewritten,
+    a new cache file is built and the old one becomes unused (but is not auto-deleted).
+    ``suffix`` lets subclasses encode extra config that affects cache contents
+    (e.g. which action stream was materialized).
+    """
+    mod_time = os.path.getmtime(zarr_path)
+    stamp = datetime.fromtimestamp(mod_time).strftime("%Y%m%dT%H%M%S")
+    stem = os.path.basename(zarr_path.rstrip("/")).split(".")[0]
+    parts = [stem, stamp]
+    if suffix:
+        parts.append(suffix)
+    return "_".join(parts)
+
+
+def _open_lmdb_replay_buffer(cache_path: pathlib.Path) -> ReplayBuffer:
+    """Open an existing LMDB cache file as a readonly ReplayBuffer (mmap-backed)."""
+    store = zarr.LMDBStore(str(cache_path), readonly=True, lock=False)
+    return ReplayBuffer.create_from_group(group=zarr.group(store))
+
+
+def _build_lmdb_cache(
+    cache_path: pathlib.Path,
+    write_fn,
+):
+    """Build an LMDB cache atomically. ``write_fn(lmdb_store)`` populates the store.
+
+    Builds to a sibling ``.building`` directory and renames on success so that
+    interrupted runs never leave a half-written cache visible.
+    """
+    tmp_path = cache_path.with_suffix(cache_path.suffix + ".building")
+    if tmp_path.exists():
+        shutil.rmtree(tmp_path)
+    try:
+        with zarr.LMDBStore(
+            str(tmp_path),
+            writemap=True,
+            metasync=False,
+            sync=False,
+            map_async=True,
+            lock=False,
+        ) as lmdb_store:
+            write_fn(lmdb_store)
+        os.rename(tmp_path, cache_path)
+    except BaseException:
+        if tmp_path.exists():
+            shutil.rmtree(tmp_path, ignore_errors=True)
+        raise
 
 
 def gaussian_kernel(kernel_size=9, sigma=3, channels=3):
@@ -87,9 +143,11 @@ class BaseZarrLowdimDataset(BaseLowdimDataset):
         pad_after: int = 0,
         seed: int = 42,
         val_ratio: float = 0.0,
+        downsample_steps: int = 1,
     ):
         super().__init__()
         self._validate_zarr_configs(zarr_configs)
+        assert downsample_steps >= 1, f"downsample_steps must be >= 1, got {downsample_steps}"
 
         obs_meta = shape_meta["obs"]
         self.lowdim_keys = list(obs_meta.keys())
@@ -162,6 +220,7 @@ class BaseZarrLowdimDataset(BaseLowdimDataset):
                 pad_after=pad_after,
                 episode_mask=train_mask,
                 key_first_k=key_first_k,
+                downsample_steps=downsample_steps,
             ))
             self.sample_probabilities[i] = cfg.get("sampling_weight") or np.sum(train_mask)
 
@@ -170,6 +229,7 @@ class BaseZarrLowdimDataset(BaseLowdimDataset):
         self.pad_before = pad_before
         self.pad_after = pad_after
         self.n_obs_steps = n_obs_steps
+        self.downsample_steps = downsample_steps
 
     def _get_buffer_keys(self) -> List[str]:
         raise NotImplementedError()
@@ -247,6 +307,7 @@ class BaseZarrLowdimDataset(BaseLowdimDataset):
                 pad_before=self.pad_before,
                 pad_after=self.pad_after,
                 episode_mask=self.val_masks[0],
+                downsample_steps=self.downsample_steps,
             )
         ]
         return val_set
@@ -466,56 +527,185 @@ class BaseZarrImageDataset(BaseImageDataset):
         seed: int = 42,
         val_ratio: float = 0.0,
         color_jitter: Optional[Dict] = None,
+        cache_dir: Optional[str] = None,
     ):
+        """
+        cache_dir:
+            If set, each source zarr is materialized once into an LMDB file under
+            ``cache_dir``. Every process (and dataloader worker) then opens the LMDB
+            readonly, so the OS page cache holds a single shared copy of the data
+            instead of one copy per Python process. The cache filename embeds the
+            source zarr's mtime, so updating the zarr forces a fresh build.
+            If None, falls back to loading the zarr into an in-RAM ``zarr.MemoryStore``
+            (legacy behavior; duplicates per GPU process).
+        """
         super().__init__()
         self._validate_zarr_configs(zarr_configs)
-
         obs_meta = shape_meta["obs"]
         self.rgb_keys = [k for k, v in obs_meta.items() if v.get("type") == "rgb"]
         self.lowdim_keys = [k for k, v in obs_meta.items() if v.get("type") != "rgb"]
         self.shape_meta = shape_meta
 
-        keys = self._get_buffer_keys()
-        key_first_k = self._build_key_first_k(keys, n_obs_steps, horizon)
+        self._buffer_keys = self._get_buffer_keys()
+        self._key_first_k = self._build_key_first_k(self._buffer_keys, n_obs_steps, horizon)
 
+        self.cache_dir = os.path.expanduser(cache_dir) if cache_dir else None
         self.num_datasets = len(zarr_configs)
-        self.replay_buffers = []
-        self.train_masks: List[np.ndarray] = []
-        self.val_masks: List[np.ndarray] = []
-        self.samplers = []
-        self.sample_probabilities = np.zeros(len(zarr_configs))
-        self.zarr_paths: List[str] = []
-
-        for i, cfg in enumerate(zarr_configs):
-            zarr_path = os.path.expanduser(cfg["path"])
-            buf, train_mask, val_mask = self._load_buffer_and_masks(
-                zarr_path=zarr_path,
-                keys=keys,
-                cfg=cfg,
-                seed=seed,
-                default_val_ratio=val_ratio,
-            )
-            self.replay_buffers.append(buf)
-            self.zarr_paths.append(zarr_path)
-            self.train_masks.append(train_mask)
-            self.val_masks.append(val_mask)
-            self.samplers.append(ImprovedDatasetSampler(
-                replay_buffer=buf,
-                sequence_length=horizon,
-                shape_meta=shape_meta,
-                pad_before=pad_before,
-                pad_after=pad_after,
-                episode_mask=train_mask,
-                key_first_k=key_first_k,
-            ))
-            self.sample_probabilities[i] = cfg.get("sampling_weight") or np.sum(train_mask)
-
-        self.sample_probabilities = self._normalize_sample_probabilities(self.sample_probabilities)
+        self.zarr_configs = zarr_configs
+        self.seed = seed
+        self.default_val_ratio = val_ratio
         self.horizon = horizon
         self.pad_before = pad_before
         self.pad_after = pad_after
         self.n_obs_steps = n_obs_steps
         self.transforms = self.get_default_color_jitter(color_jitter)
+
+        self.zarr_paths: List[str] = [
+            os.path.expanduser(cfg["path"]) for cfg in zarr_configs
+        ]
+
+        # Per-dataset cache paths (one LMDB file per source zarr). None when
+        # cache_dir is unset; computed eagerly so workers can recompute and reopen.
+        self._cache_paths: List[Optional[pathlib.Path]] = self._resolve_cache_paths()
+
+        # When using LMDB caches, build any missing caches up front (file-locked
+        # so concurrent GPU procs cooperate). This happens in the parent process
+        # before any worker fork.
+        if self.cache_dir is not None:
+            self._ensure_caches_built()
+
+        # train/val masks are deterministic given (n_episodes, seed, val_ratio, max_train_episodes),
+        # so they're safe to materialize in __init__ and re-use across all workers.
+        # In the LMDB path n_episodes is read by briefly opening each cache; in the
+        # in-memory path the buffers themselves carry n_episodes after loading.
+        self.replay_buffers: List = []
+        self.samplers: List = []
+        self.train_masks: List[np.ndarray] = []
+        self.val_masks: List[np.ndarray] = []
+        self.sample_probabilities = np.zeros(len(zarr_configs))
+
+        # ``_use_val_mask`` controls which mask the per-process sampler builder picks.
+        # Set to True by ``get_validation_dataset`` on the val-side copy.
+        self._use_val_mask = False
+
+        self._init_buffers_and_samplers()
+        self._init_pid = os.getpid()
+
+    def _resolve_cache_paths(self) -> List[Optional[pathlib.Path]]:
+        if self.cache_dir is None:
+            return [None] * self.num_datasets
+        cache_dir = pathlib.Path(self.cache_dir)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return [
+            cache_dir / (_zarr_cache_filename(zarr_path, self._cache_suffix(cfg)) + ".zarr.mdb")
+            for zarr_path, cfg in zip(self.zarr_paths, self.zarr_configs)
+        ]
+
+    def _cache_suffix(self, cfg: Dict) -> str:
+        """Subclass hook: extra string baked into the cache filename when config
+        flags change what gets materialized into the cache (e.g. action_key)."""
+        return ""
+
+    def _ensure_caches_built(self) -> None:
+        """File-locked build for any missing caches. Safe across concurrent GPU procs."""
+        for zarr_path, cfg, cache_path in zip(self.zarr_paths, self.zarr_configs, self._cache_paths):
+            assert cache_path is not None
+            lock_path = cache_path.with_suffix(cache_path.suffix + ".lock")
+            with FileLock(str(lock_path)):
+                if not cache_path.exists():
+                    print(f"[BaseZarrImageDataset] Building LMDB cache: {cache_path}")
+                    _build_lmdb_cache(
+                        cache_path,
+                        lambda store, zarr_path=zarr_path, cfg=cfg: self._write_cache(
+                            store, zarr_path=zarr_path, keys=self._buffer_keys, cfg=cfg
+                        ),
+                    )
+
+    def _write_cache(self, lmdb_store, zarr_path: str, keys: List[str], cfg: Dict) -> None:
+        """Populate an LMDB store with one source zarr.
+
+        Default: a straight copy of the requested keys. Subclasses override this
+        when the cache contents differ from the raw zarr (e.g. remapped action key).
+        """
+        src_group = zarr.open(zarr_path, mode="r")
+        ReplayBuffer.copy_from_store(
+            src_store=src_group.store, store=lmdb_store, keys=keys
+        )
+
+    def _init_buffers_and_samplers(self) -> None:
+        """Open every replay buffer and build per-dataset samplers in this process.
+
+        Called once at the end of ``__init__`` (parent process) and again on first
+        ``__getitem__`` in any forked worker, since LMDB handles are not fork-safe.
+        Idempotent: callers may safely re-invoke after a fork.
+        """
+        replay_buffers: List = []
+        samplers: List = []
+        train_masks: List[np.ndarray] = []
+        val_masks: List[np.ndarray] = []
+        sample_probabilities = np.zeros(self.num_datasets)
+
+        for i, (zarr_path, cfg, cache_path) in enumerate(
+            zip(self.zarr_paths, self.zarr_configs, self._cache_paths)
+        ):
+            buf, train_mask, val_mask = self._load_buffer_and_masks(
+                zarr_path=zarr_path,
+                keys=self._buffer_keys,
+                cfg=cfg,
+                seed=self.seed,
+                default_val_ratio=self.default_val_ratio,
+                cache_path=cache_path,
+            )
+            replay_buffers.append(buf)
+            train_masks.append(train_mask)
+            val_masks.append(val_mask)
+            episode_mask = val_mask if self._use_val_mask else train_mask
+            samplers.append(ImprovedDatasetSampler(
+                replay_buffer=buf,
+                sequence_length=self.horizon,
+                shape_meta=self.shape_meta,
+                pad_before=self.pad_before,
+                pad_after=self.pad_after,
+                episode_mask=episode_mask,
+                key_first_k=self._key_first_k,
+            ))
+            sample_probabilities[i] = cfg.get("sampling_weight") or np.sum(train_mask)
+
+        self.replay_buffers = replay_buffers
+        self.samplers = samplers
+        self.train_masks = train_masks
+        self.val_masks = val_masks
+        self.sample_probabilities = self._normalize_sample_probabilities(sample_probabilities)
+
+    def _ensure_initialized(self) -> None:
+        """Rebuild per-process state if we've crossed a fork boundary.
+
+        No-op for in-memory mode (workers safely share the parent's MemoryStore
+        via copy-on-write). For LMDB mode, the inherited LMDB handles are stale
+        in the worker and py-lmdb refuses to reopen the same file in a process
+        where its (C-level) ``active_envs`` registry already knows about it.
+        We close the inherited handles first — that clears the child's own
+        registry without affecting the parent, since each post-fork process has
+        its own address space — then open fresh.
+        """
+        if self.cache_dir is None:
+            return
+        if os.getpid() != self._init_pid:
+            self._close_inherited_stores()
+            self._init_buffers_and_samplers()
+            self._init_pid = os.getpid()
+
+    def _close_inherited_stores(self) -> None:
+        for buf in (self.replay_buffers or []):
+            store = getattr(getattr(buf, "root", None), "store", None)
+            close = getattr(store, "close", None)
+            if close is not None:
+                try:
+                    close()
+                except Exception:
+                    pass
+        self.replay_buffers = []
+        self.samplers = []
 
     def _get_buffer_keys(self) -> List[str]:
         """Return the list of keys to load from the zarr store."""
@@ -528,25 +718,36 @@ class BaseZarrImageDataset(BaseImageDataset):
         cfg: Dict,
         seed: int,
         default_val_ratio: float,
+        cache_path: Optional[pathlib.Path] = None,
     ) -> Tuple[ReplayBuffer, np.ndarray, np.ndarray]:
         """
         Load a ReplayBuffer and produce train/val masks for it.
 
-        When the subclass uses the default zarr loader and ``max_train_episodes`` would
-        drop a non-trivial fraction of episodes, this reads ``meta/episode_ends`` from
-        the source first, computes the train/val/keep masks, and loads only the kept
-        episodes via ``ReplayBuffer.copy_selected_episodes_from_path``. The returned
-        masks are remapped to the new compact episode indexing.
+        If ``cache_path`` is provided, opens that LMDB file readonly (assumed to
+        already be built by ``_ensure_caches_built``). Otherwise falls back to
+        the legacy in-memory paths.
 
-        Otherwise (full-dataset case, or subclass with a custom ``load_replay_buffer``)
-        it falls back to the existing flow: load everything, then compute masks against
-        the loaded buffer's ``n_episodes``.
+        For the in-memory path, when the subclass uses the default zarr loader and
+        ``max_train_episodes`` would drop a non-trivial fraction of episodes, this
+        reads ``meta/episode_ends`` from the source first, computes the train/val/keep
+        masks, and loads only the kept episodes (skipping NFS bandwidth on the big arrays).
         """
+        max_train_episodes = cfg.get("max_train_episodes", None)
+        cfg_val_ratio = cfg.get("val_ratio", default_val_ratio)
+
+        if cache_path is not None:
+            buf = _open_lmdb_replay_buffer(cache_path)
+            train_mask, val_mask = self._build_episode_masks(
+                n_episodes=buf.n_episodes,
+                val_ratio=cfg_val_ratio,
+                max_train_episodes=max_train_episodes,
+                seed=seed,
+            )
+            return buf, train_mask, val_mask
+
         uses_default_loader = (
             type(self).load_replay_buffer is BaseZarrImageDataset.load_replay_buffer
         )
-        max_train_episodes = cfg.get("max_train_episodes", None)
-        cfg_val_ratio = cfg.get("val_ratio", default_val_ratio)
 
         if uses_default_loader and max_train_episodes is not None:
             # Read meta/episode_ends without loading any data arrays, so we can decide
@@ -646,10 +847,13 @@ class BaseZarrImageDataset(BaseImageDataset):
             index = 0
         val_set = copy.copy(self)
         val_set.num_datasets = 1
+        val_set._use_val_mask = True
         val_set.replay_buffers = [self.replay_buffers[index]]
         val_set.train_masks = [self.train_masks[index]]
         val_set.val_masks = [self.val_masks[index]]
         val_set.zarr_paths = [self.zarr_paths[index]]
+        val_set.zarr_configs = [self.zarr_configs[index]]
+        val_set._cache_paths = [self._cache_paths[index]]
         val_set.sample_probabilities = np.array([1.0])
         val_set.samplers = [
             ImprovedDatasetSampler(
@@ -659,8 +863,12 @@ class BaseZarrImageDataset(BaseImageDataset):
                 pad_before=self.pad_before,
                 pad_after=self.pad_after,
                 episode_mask=self.val_masks[index],
+                key_first_k=self._key_first_k,
             )
         ]
+        # val_set was constructed in this (parent) process; workers will fork from
+        # the main process and re-init via _ensure_initialized().
+        val_set._init_pid = os.getpid()
         return val_set
 
     def __len__(self) -> int:

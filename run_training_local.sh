@@ -6,7 +6,7 @@ set -euo pipefail
 # ============================================================================
 # Training hyperparameters
 # ============================================================================
-BATCH_SIZE=64
+BATCH_SIZE=63
 LR=1e-4
 
 NUM_WORKERS=8
@@ -17,19 +17,19 @@ USE_TORCH_COMPILE=false
 TORCH_COMPILE_MODE='default'
 
 # Number of GPUs to use locally. Set to 1 for single-GPU training.
-NUM_GPUS=1
+NUM_GPUS=3
 # ============================================================================
 
 # ============================================================================
 # Experiment configuration
 # ============================================================================
 EXPERIMENT_CLASS=mundane
-EXPERIMENT_NAME=2_obs_pill_CLIP_film
+EXPERIMENT_NAME=2_obs_pill_DINOv3_film
 # EXPERIMENT_NAME=8_obs_pill_CLIP_attention_double_enc
 
 CONFIG_DIR=config/${EXPERIMENT_CLASS}
 CONFIG_NAME=${EXPERIMENT_NAME}.yaml
-HYDRA_RUN_DIR=data/outputs/${EXPERIMENT_CLASS}/${EXPERIMENT_NAME}
+HYDRA_RUN_DIR=data/outputs/${EXPERIMENT_CLASS}/${EXPERIMENT_NAME}_pillv5
 # ============================================================================
 
 DATE=`date +"%Y.%m.%d"`
@@ -44,17 +44,7 @@ source env/bin/activate
 
 mkdir -p logs
 
-# --- WANDB Authentication ---
-export WANDB_USERNAME="michzeng"
-SECRETS_FILE="$PWD/.secrets"
-if [ -f "$SECRETS_FILE" ]; then
-    source "$SECRETS_FILE"
-    echo "Loaded secrets from $SECRETS_FILE"
-else
-    echo "ERROR: $SECRETS_FILE not found. Create it from .secrets.template before running." >&2
-    exit 1
-fi
-echo "WANDB_USERNAME and WANDB_API_KEY set for authentication."
+# WANDB credentials come from ~/.netrc (set once via `wandb login`).
 
 export TORCH_LOGS="recompiles"
 export HYDRA_FULL_ERROR=1

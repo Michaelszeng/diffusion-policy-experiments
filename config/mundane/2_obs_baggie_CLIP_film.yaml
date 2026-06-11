@@ -34,10 +34,10 @@ exp_name: defaults
 logging:  # wandb logging configuration
   group: null
   id: null
-  name: mundane_2_obs_pill_v5_CLIP_film
-  project: mundane_pill
+  name: mundane_2_obs_baggie_v1_CLIP_film
+  project: mundane_baggie
 multi_run:
-  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_timm_mundane_2_obs_pill_v2_CLIP_film
+  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_timm_mundane_2_obs_baggie_v1_CLIP_film
   run_dir: data/outputs/${multi_run.wandb_name_base}
 horizon: ${eval:${n_obs_steps} + 14}
 n_action_steps: 8  # Inference-only parameter
@@ -62,7 +62,7 @@ shape_meta:
       - 224
       - 224
       type: rgb
-    camera_317622071752_rgb:
+    camera_408322070972_rgb:
       shape:
       - 3
       - 224
@@ -138,15 +138,14 @@ task:
     seed: ${seed}
     action_key: action  # use "action_follower" to train against the executed-pose stream instead
     downsample_steps: 3  # zarr is 30 Hz; stride 3 → policy sees 10 Hz obs/action sequences
-    cache_dir: ~/.cache/mundane_datasets  # share dataset across GPU procs via LMDB+mmap (saves ~2/3 RAM at 3 GPUs)
     zarr_configs:
-    - path: /home/data_storage/pill_v5.zarr
+    - path: /home/data_storage/baggie_v1.zarr
       max_train_episodes: null  # 502 episodes total; ~5% held out for validation
       sampling_weight: null
       val_ratio: 0.01
-  name: mundane_pill
+  name: mundane_baggie
   shape_meta: ${shape_meta}
-task_name: mundane_pill
+task_name: mundane_baggie
 training:
   mixed_precision: null  # bf16 or null
   use_torch_compile: false

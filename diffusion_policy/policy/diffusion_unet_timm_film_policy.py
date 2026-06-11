@@ -127,6 +127,9 @@ class DiffusionUnetTimmFilmPolicy(BaseImagePolicy):
         ):
             nobs = self.normalizer.normalize(obs_dict)
             B = next(iter(nobs.values())).shape[0]
+            # Keep only the n_obs_steps real frames (see compute_loss for why).
+            To = self.obs_encoder.n_obs_steps
+            nobs = {k: v[:, :To] for k, v in nobs.items()}
             global_cond = self.obs_encoder(nobs, output_format="cat")
 
             inpaint_data = torch.zeros(
@@ -153,6 +156,13 @@ class DiffusionUnetTimmFilmPolicy(BaseImagePolicy):
         nobs = self.normalizer.normalize(batch["obs"])
         nactions = self.normalizer["action"].normalize(batch["action"])
 
+        # The dataset returns each obs key at length == prediction horizon (the sampler
+        # pads up to sequence_length); only the first n_obs_steps frames are real obs —
+        # the rest is NaN/zero padding from key_first_k. Slice to n_obs_steps so the
+        # encoder emits exactly n_keys * n_obs_steps features (matching cat_output_dim).
+        # (Mirrors the slice in diffusion_unet_timm_attention_policy._encode_obs.)
+        To = self.obs_encoder.n_obs_steps
+        nobs = {k: v[:, :To] for k, v in nobs.items()}
         global_cond = self.obs_encoder(nobs, output_format="cat")
         trajectory = nactions
         noise = torch.randn(trajectory.shape, device=trajectory.device, dtype=self.dtype)
