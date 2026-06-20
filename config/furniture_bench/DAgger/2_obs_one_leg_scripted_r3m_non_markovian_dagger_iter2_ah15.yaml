@@ -1,0 +1,178 @@
+# @package _global_
+# Config lives in a subfolder (DAgger/), so it is referenced as
+# --config-name=DAgger/<name>. Without this directive Hydra would nest the whole
+# config under a `DAgger:` package, breaking top-level overrides like
+# dataloader.batch_size. `_global_` forces the contents to the top level.
+
+# TO EDIT:
+#  - logging.name
+#  - logging.wandb_name_base
+#  - training.checkpoint_path
+#  - task.dataset.zarr_configs[i].path
+_target_: diffusion_policy.workspace.train_diffusion_unet_hybrid_workspace_no_env.TrainDiffusionUnetHybridWorkspaceNoEnv
+seed: 41
+checkpoint:
+  save_last_ckpt: true
+  save_last_snapshot: false
+  topk:
+    format_str: epoch={epoch:03d}-val_loss={val_loss:.4f}-val_ddim_mse={val_ddim_mse:.6f}.ckpt
+    k: 5
+    mode: min
+    monitor_key: val_ddim_mse_0
+dataloader:
+  batch_size: 64
+  num_workers: 8
+  persistent_workers: true
+  pin_memory: true
+  shuffle: true
+  prefetch_factor: 1
+val_dataloader:
+  batch_size: 64
+  num_workers: 8
+  persistent_workers: true
+  pin_memory: true
+  drop_last: false
+  shuffle: true
+  prefetch_factor: 1
+ema:
+  _target_: diffusion_policy.model.diffusion.ema_model.EMAModel
+  inv_gamma: 1.0
+  max_value: 0.9999
+  min_value: 0.0
+  power: 0.75
+  update_after_step: 0
+exp_name: defaults
+logging:
+  group: null
+  id: null
+  name: furniture_bench_2_obs_one_leg_scripted_r3m_non_markovian_dagger_iter2_ah15
+  project: furniture_bench_one_leg
+multi_run:
+  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_hybrid_furniture_bench_2_obs_one_leg_scripted_r3m_non_markovian_dagger_iter2_ah15
+  run_dir: data/outputs/${multi_run.wandb_name_base}
+horizon: ${eval:${n_obs_steps} + 14}
+n_action_steps: 8
+n_obs_steps: 2
+shape_meta:
+  action:
+    shape:
+    - 10
+  obs:
+    color_image1:
+      shape:
+      - 240
+      - 320
+      - 3
+      type: rgb
+    color_image2:
+      shape:
+      - 240
+      - 320
+      - 3
+      type: rgb
+    robot_state:
+      shape:
+      - 16
+      type: low_dim
+policy:
+  _target_: diffusion_policy.policy.diffusion_unet_hybrid_image_targeted_policy.DiffusionUnetHybridImageTargetedPolicy
+  diffusion_step_embed_dim: 128
+  down_dims:
+  - 256
+  - 512
+  - 1024
+  kernel_size: 5
+  n_groups: 8
+  horizon: ${horizon}
+  n_action_steps: ${n_action_steps}
+  n_obs_steps: ${n_obs_steps}
+  past_action_visible: false
+  DDPM_noise_scheduler:
+    _target_: diffusers.schedulers.scheduling_ddpm.DDPMScheduler
+    beta_end: 0.02
+    beta_schedule: squaredcos_cap_v2
+    beta_start: 0.0001
+    clip_sample: true
+    num_train_timesteps: 100
+    prediction_type: epsilon
+    variance_type: fixed_small
+  num_DDPM_inference_steps: 100
+  num_DDIM_inference_steps: 10
+  use_target_cond: false
+  target_dim: null
+  shape_meta: ${shape_meta}
+  inference_loading: false
+  obs_encoder:
+    _target_: diffusion_policy.model.vision.r3m_config_util.R3MObsEncoder
+    shape_meta: ${shape_meta}
+    freeze_encoder: false     # Fine-tune the R3M backbone
+    projection_dim: 128
+    front_camera_key: color_image2
+task:
+  dataset:
+    _target_: diffusion_policy.dataset.furniture_bench_dataset.FurnitureBenchDataset
+    shape_meta: ${shape_meta}
+    horizon: ${horizon}
+    n_obs_steps: ${n_obs_steps}
+    pad_after: ${eval:${policy.horizon} - 1}
+    pad_before: ${eval:${task.dataset.n_obs_steps} - 1}
+    seed: ${seed}
+    zarr_configs:
+    - path: ../benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/scripted_non_markovian/low/success_translated.zarr
+      max_train_episodes: 190
+      sampling_weight: null
+      val_ratio: 0.01
+    - path: ../benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/dagger_iter0_ah15_nm/low/correction/success_translated.zarr
+      max_train_episodes: 40
+      sampling_weight: null
+      val_ratio: 0.01
+    - path: ../benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/dagger_iter1_ah15_nm/low/correction/success_translated.zarr
+      max_train_episodes: 40
+      sampling_weight: null
+      val_ratio: 0.01
+    - path: ../benchmark-furniturebench-juicer/dataset/processed/sim/one_leg/dagger_iter2_ah15_nm/low/correction/success_translated.zarr
+      max_train_episodes: 40
+      sampling_weight: null
+      val_ratio: 0.01
+  name: furniture_bench
+  shape_meta: ${shape_meta}
+task_name: furniture_bench
+training:
+  mixed_precision: bf16
+  gradient_clip_val: 1.0
+  use_torch_compile: false
+  torch_compile_mode: default
+  checkpoint_path: /data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/furniture_bench/DAgger/2_obs_one_leg_scripted_r3m_non_markovian_dagger_iter1_ah15/checkpoints/epoch=010-val_loss=0.0470-val_ddim_mse=0.016986.ckpt
+  checkpoint_every: 5
+  debug: false
+  device: cuda
+  gradient_accumulate_every: 1
+  lr_scheduler: cosine
+  lr_warmup_steps: 500
+  encoder_lr_scale: 1.0  # Fine-tune encoder and UNet at same LR
+  max_train_steps: null
+  max_val_steps: null
+  total_train_steps: 50000
+  num_epochs: null
+  resume: true
+  # Warm-starting from a 200-episode checkpoint: count total_train_steps as steps
+  # taken in THIS fine-tuning run rather than continuing the prior run's counter.
+  # Requeue/preemption resumes still converge to this fixed total.
+  reset_step_counter_on_warmstart: true
+  rollout_every: 5
+  sample_every: ${training.checkpoint_every}
+  seed: ${seed}
+  tqdm_interval_sec: 30.0
+  use_ema: true
+  val_every: 1
+  log_val_mse: true
+  eval_mse_DDPM: true
+  eval_mse_DDIM: true
+optimizer:
+  _target_: torch.optim.AdamW
+  betas:
+  - 0.95
+  - 0.999
+  eps: 1.0e-08
+  lr: 0.0001
+  weight_decay: 1.0e-06
