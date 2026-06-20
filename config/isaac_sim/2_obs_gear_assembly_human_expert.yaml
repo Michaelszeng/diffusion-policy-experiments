@@ -103,8 +103,6 @@ policy:
     variance_type: fixed_small
   num_DDPM_inference_steps: 100
   num_DDIM_inference_steps: 10
-  use_target_cond: false
-  target_dim: 3  # goal T pose
   shape_meta: ${shape_meta}
   obs_encoder:
     _target_: diffusion_policy.model.vision.r3m_config_util.R3MObsEncoder
