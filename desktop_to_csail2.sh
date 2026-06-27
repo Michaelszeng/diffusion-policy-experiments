@@ -3,8 +3,8 @@
 # SOURCE_DIR="/home/michzeng/Downloads/IsaacGym_Preview_4_Package.tar.gz"
 # TARGET_DIR="/data/locomotion/michzeng/"
 
-SOURCE_DIR="           /home/michzeng/manifeel/data/nutbolt_quan_July1"
-# SOURCE_DIR="           /home/michzeng/manifeel/data/pih_quan_June06"
+# SOURCE_DIR="           /home/michzeng/manifeel/data/nutbolt_quan_July1"
+SOURCE_DIR="           /home/michzeng/manifeel/data/pih_quan_June06"
 # SOURCE_DIR="           /home/michzeng/manifeel/data/plug_quan_Aug02"
 TARGET_DIR="/data/locomotion/michzeng/manifeel/data/"
 

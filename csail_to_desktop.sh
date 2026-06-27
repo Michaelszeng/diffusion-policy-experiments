@@ -7,9 +7,19 @@
 # SOURCE_DIR="data/outputs/maniskill/"
 # SOURCE_DIR="data/outputs/isaac_sim/"
 
-SOURCE_DIR="data/diffusion_experiments/maniskill/"
+# SOURCE_DIR="/home/michzeng/benchmark-furniturebench-juicer/dataset/raw/sim/one_leg/"
+# TARGET_DIR="/data/locomotion/michzeng/benchmark-furniturebench-juicer/dataset/raw/sim/one_leg/dagger_iter2_ah1_nm"
+# TARGET_DIR="/data/locomotion/michzeng/benchmark-furniturebench-juicer/dataset/raw/sim/one_leg/dagger_iter2_ah3_nm"
+# TARGET_DIR="/data/locomotion/michzeng/benchmark-furniturebench-juicer/dataset/raw/sim/one_leg/dagger_iter2_ah6_nm"
+# TARGET_DIR="/data/locomotion/michzeng/benchmark-furniturebench-juicer/dataset/raw/sim/one_leg/dagger_iter2_ah10_nm"
+# TARGET_DIR="/data/locomotion/michzeng/benchmark-furniturebench-juicer/dataset/raw/sim/one_leg/dagger_iter2_ah15_nm"
+
+# SOURCE_DIR="data/outputs/franka_kitchen/"
+# TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/franka_kitchen/2_obs_human_expert"
+
+# SOURCE_DIR="data/diffusion_experiments/maniskill/"
 # TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/diffusion_experiments/maniskill/maniskill_planar_push_t_teleop_merged_pruned.zarr"
-TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/diffusion_experiments/maniskill/maniskill_planar_push_t_teleop_merged_pruned_obs_horizon_3_idle_tol_0_0005.zarr"
+# TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/diffusion_experiments/maniskill/maniskill_planar_push_t_teleop_merged_pruned_obs_horizon_3_idle_tol_0_0005.zarr"
 
 # Target directory on the target computer
 # TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/furniture_bench/2_obs_one_leg_teleop_r3m_test"

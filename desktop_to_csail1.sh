@@ -3,10 +3,13 @@
 # SOURCE_DIR="/home/michzeng/Downloads/IsaacGym_Preview_4_Package.tar.gz"
 # TARGET_DIR="/data/locomotion/michzeng/"
 
-SOURCE_DIR="           /home/michzeng/manifeel/data/nutbolt_quan_July1"
+# SOURCE_DIR="           /home/michzeng/manifeel/data/nutbolt_quan_July1"
 # SOURCE_DIR="           /home/michzeng/manifeel/data/pih_quan_June06"
 # SOURCE_DIR="           /home/michzeng/manifeel/data/plug_quan_Aug02"
-TARGET_DIR="/data/locomotion/michzeng/manifeel/data/"
+# TARGET_DIR="/data/locomotion/michzeng/manifeel/data/"
+
+SOURCE_DIR="           /home/michzeng/IsaacGym_Preview_TacSL_Package.tar.gz"
+TARGET_DIR="/data/locomotion/michzeng/"
 
 # SOURCE_DIR="           /home/michzeng/benchmark-furniturebench-juicer/dataset/raw/sim/one_leg/dagger_iter2_ah1_nm"
 # TARGET_DIR="/data/locomotion/michzeng/benchmark-furniturebench-juicer/dataset/raw/sim/one_leg/"
