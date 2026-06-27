@@ -142,14 +142,10 @@ task:
     seed: ${seed}
     downsample_steps: 1
     zarr_configs:
-    - path: /data/locomotion/michzeng/IsaacLab/datasets/gear_assembly_generated.zarr
-      max_train_episodes: 141
-      sampling_weight: 0.5
-      val_ratio: 0.05
     - path: /data/locomotion/michzeng/IsaacLab/datasets/gear_assembly_source.zarr
-      max_train_episodes: 50
-      sampling_weight: 0.5
-      val_ratio: 0.01
+      max_train_episodes: null
+      sampling_weight: null
+      val_ratio: 0.05
   name: isaac_sim_gear_assembly
   shape_meta: ${shape_meta}
 task_name: isaac_sim
