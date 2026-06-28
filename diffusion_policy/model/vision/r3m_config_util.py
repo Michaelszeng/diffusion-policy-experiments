@@ -66,7 +66,7 @@ class ResNetObsEncoder(nn.Module):
 
     One ResNet18 per RGB camera key. Each camera's features are projected to
     `projection_dim` and concatenated with (already-normalized) low-dim
-    observations. Encoder weights are shared across timesteps (B*T frames are 
+    observations. Encoder weights are shared across timesteps (B*T frames are
     processed as a flat batch with no temporal state in the encoder).
 
     Args:
@@ -97,12 +97,8 @@ class ResNetObsEncoder(nn.Module):
         super().__init__()
 
         obs_meta = shape_meta["obs"]
-        self.rgb_keys: List[str] = sorted(
-            [k for k, v in obs_meta.items() if v.get("type") == "rgb"]
-        )
-        self.lowdim_keys: List[str] = sorted(
-            [k for k, v in obs_meta.items() if v.get("type") != "rgb"]
-        )
+        self.rgb_keys: List[str] = sorted([k for k, v in obs_meta.items() if v.get("type") == "rgb"])
+        self.lowdim_keys: List[str] = sorted([k for k, v in obs_meta.items() if v.get("type") != "rgb"])
         assert len(self.rgb_keys) > 0, "ResNetObsEncoder requires at least one RGB key"
 
         # Resolve front camera keys (support legacy single-key arg).
@@ -113,20 +109,14 @@ class ResNetObsEncoder(nn.Module):
         if isinstance(front_camera_keys, str):
             front_camera_keys = [front_camera_keys]
         for k in front_camera_keys:
-            assert k in self.rgb_keys, (
-                f"front_camera_keys entry '{k}' not in rgb_keys {self.rgb_keys}"
-            )
+            assert k in self.rgb_keys, f"front_camera_keys entry '{k}' not in rgb_keys {self.rgb_keys}"
         self.front_camera_keys: List[str] = list(front_camera_keys)
 
         # ── Per-camera encoders ────────────────────────────────────────────────
-        self.encoders = nn.ModuleDict(
-            {key: _build_resnet18(pretrained, use_groupnorm) for key in self.rgb_keys}
-        )
+        self.encoders = nn.ModuleDict({key: _build_resnet18(pretrained, use_groupnorm) for key in self.rgb_keys})
 
         # ── Per-camera projection layers ───────────────────────────────────────
-        self.projectors = nn.ModuleDict(
-            {key: nn.Linear(self.RESNET_OUT_DIM, projection_dim) for key in self.rgb_keys}
-        )
+        self.projectors = nn.ModuleDict({key: nn.Linear(self.RESNET_OUT_DIM, projection_dim) for key in self.rgb_keys})
 
         # ── Low-dim output dimension ───────────────────────────────────────────
         lowdim_dim = sum(obs_meta[k]["shape"][0] for k in self.lowdim_keys)
@@ -141,19 +131,23 @@ class ResNetObsEncoder(nn.Module):
         # ── Camera-specific augmentation transforms ────────────────────────────
         # Front camera: remove 20 px side margins → random/center crop to 224×224
         # Wrist camera: resize to 224×224
-        self.front_train_transform = T.Compose([
-            T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.3),
-            T.GaussianBlur(kernel_size=5, sigma=(0.01, 2.0)),
-            T.CenterCrop((240, 280)),   # (H=240, W=280): remove 20 px from each side
-            T.RandomCrop((224, 224)),
-        ])
+        self.front_train_transform = T.Compose(
+            [
+                T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.3),
+                T.GaussianBlur(kernel_size=5, sigma=(0.01, 2.0)),
+                T.CenterCrop((240, 280)),  # (H=240, W=280): remove 20 px from each side
+                T.RandomCrop((224, 224)),
+            ]
+        )
         self.front_eval_transform = T.CenterCrop((224, 224))
 
-        self.wrist_train_transform = T.Compose([
-            T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.3),
-            T.GaussianBlur(kernel_size=5, sigma=(0.01, 2.0)),
-            T.Resize((224, 224), antialias=True),
-        ])
+        self.wrist_train_transform = T.Compose(
+            [
+                T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.3),
+                T.GaussianBlur(kernel_size=5, sigma=(0.01, 2.0)),
+                T.Resize((224, 224), antialias=True),
+            ]
+        )
         self.wrist_eval_transform = T.Resize((224, 224), antialias=True)
 
         # ── Optionally freeze encoder ──────────────────────────────────────────
@@ -203,7 +197,7 @@ class ResNetObsEncoder(nn.Module):
 
         Args:
             obs_dict: dict mapping each obs key to a tensor.
-                      RGB keys: (B*T, H, W, C) float32 in [0, 1]
+                      RGB keys: (B*T, H, W, C) float32 in [0, 255]
                       Low-dim keys: (B*T, d) float32 (already normalized)
 
         Returns:
@@ -277,14 +271,12 @@ class R3MObsEncoder(nn.Module):
 
     R3M's backbone handles its own normalization internally (divides by 255 and applies
     ImageNet stats). This encoder scales the [0,1] float images back to [0,255] before
-    calling the backbone.
+    calling the backbone. However, the images passed to forward() should be uint8[0,255].
 
     Args:
         shape_meta:        Hydra shape_meta dict (action + obs keys).
         freeze_encoder:    Freeze backbone and projector weights (default False).
         use_groupnorm:     Replace BatchNorm2d in the R3M backbone with GroupNorm.
-                           GroupNorm is stable under bf16 and small batch sizes;
-                           recommended when fine-tuning the backbone end-to-end.
         projection_dim:    Projection output size per camera (default 128).
         front_camera_keys: Key or list of keys for fixed/scene cameras that receive
                            crop augmentation.  Defaults to the last sorted RGB key
@@ -307,12 +299,8 @@ class R3MObsEncoder(nn.Module):
         super().__init__()
 
         obs_meta = shape_meta["obs"]
-        self.rgb_keys: List[str] = sorted(
-            [k for k, v in obs_meta.items() if v.get("type") == "rgb"]
-        )
-        self.lowdim_keys: List[str] = sorted(
-            [k for k, v in obs_meta.items() if v.get("type") != "rgb"]
-        )
+        self.rgb_keys: List[str] = sorted([k for k, v in obs_meta.items() if v.get("type") == "rgb"])
+        self.lowdim_keys: List[str] = sorted([k for k, v in obs_meta.items() if v.get("type") != "rgb"])
         assert len(self.rgb_keys) > 0, "R3MObsEncoder requires at least one RGB key"
 
         # Resolve front camera keys (support legacy single-key arg).
@@ -323,15 +311,11 @@ class R3MObsEncoder(nn.Module):
         if isinstance(front_camera_keys, str):
             front_camera_keys = [front_camera_keys]
         for k in front_camera_keys:
-            assert k in self.rgb_keys, (
-                f"front_camera_keys entry '{k}' not in rgb_keys {self.rgb_keys}"
-            )
+            assert k in self.rgb_keys, f"front_camera_keys entry '{k}' not in rgb_keys {self.rgb_keys}"
         self.front_camera_keys: List[str] = list(front_camera_keys)
 
         # ── Per-camera R3M backbones ───────────────────────────────────────────
-        self.encoders = nn.ModuleDict(
-            {key: _build_r3m_resnet18(freeze_encoder) for key in self.rgb_keys}
-        )
+        self.encoders = nn.ModuleDict({key: _build_r3m_resnet18(freeze_encoder) for key in self.rgb_keys})
 
         if use_groupnorm and not freeze_encoder:
             # Replace BatchNorm with GroupNorm for bf16 stability. Only applied when
@@ -347,9 +331,7 @@ class R3MObsEncoder(nn.Module):
                 )
 
         # ── Per-camera projection layers ───────────────────────────────────────
-        self.projectors = nn.ModuleDict(
-            {key: nn.Linear(self.R3M_OUT_DIM, projection_dim) for key in self.rgb_keys}
-        )
+        self.projectors = nn.ModuleDict({key: nn.Linear(self.R3M_OUT_DIM, projection_dim) for key in self.rgb_keys})
 
         if freeze_encoder:
             for proj in self.projectors.values():
@@ -361,19 +343,23 @@ class R3MObsEncoder(nn.Module):
         self._obs_feature_dim: int = len(self.rgb_keys) * projection_dim + lowdim_dim
 
         # ── Camera-specific augmentation transforms (same as ResNetObsEncoder) ─
-        self.front_train_transform = T.Compose([
-            T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.3),
-            T.GaussianBlur(kernel_size=5, sigma=(0.01, 2.0)),
-            T.CenterCrop((240, 280)),
-            T.RandomCrop((224, 224)),
-        ])
+        self.front_train_transform = T.Compose(
+            [
+                T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.3),
+                T.GaussianBlur(kernel_size=5, sigma=(0.01, 2.0)),
+                T.CenterCrop((240, 280)),
+                T.RandomCrop((224, 224)),
+            ]
+        )
         self.front_eval_transform = T.CenterCrop((224, 224))
 
-        self.wrist_train_transform = T.Compose([
-            T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.3),
-            T.GaussianBlur(kernel_size=5, sigma=(0.01, 2.0)),
-            T.Resize((224, 224), antialias=True),
-        ])
+        self.wrist_train_transform = T.Compose(
+            [
+                T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.3),
+                T.GaussianBlur(kernel_size=5, sigma=(0.01, 2.0)),
+                T.Resize((224, 224), antialias=True),
+            ]
+        )
         self.wrist_eval_transform = T.Resize((224, 224), antialias=True)
 
     def output_shape(self) -> Tuple[int, ...]:
@@ -409,7 +395,7 @@ class R3MObsEncoder(nn.Module):
     def forward(self, obs_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
         Args:
-            obs_dict: RGB keys → (B*T, H, W, C) float32 in [0, 1]
+            obs_dict: RGB keys → (B*T, H, W, C) float32 in [0, 255]
                       Low-dim keys → (B*T, d) float32
 
         Returns:
@@ -491,27 +477,22 @@ class R3MTactileHybridObsEncoder(R3MObsEncoder):
         )
 
         obs_meta = shape_meta["obs"]
-        self.tactile_keys: List[str] = sorted(
-            [k for k, v in obs_meta.items() if v.get("type") == "tactile"]
-        )
+        self.tactile_keys: List[str] = sorted([k for k, v in obs_meta.items() if v.get("type") == "tactile"])
         # R3MObsEncoder put tactile keys into lowdim_keys; pull them out.
         self.lowdim_keys = [k for k in self.lowdim_keys if k not in self.tactile_keys]
 
         self.tactile_encoders = nn.ModuleDict()
         for k in self.tactile_keys:
             shape = obs_meta[k]["shape"]
-            assert len(shape) == 3, (
-                f"tactile key '{k}' must have HWC shape, got {shape}"
-            )
+            assert len(shape) == 3, f"tactile key '{k}' must have HWC shape, got {shape}"
             self.tactile_encoders[k] = _TactileGridEncoder(
-                in_channels=shape[-1], feature_dim=tactile_feature_dim,
+                in_channels=shape[-1],
+                feature_dim=tactile_feature_dim,
             )
 
         lowdim_dim = sum(obs_meta[k]["shape"][0] for k in self.lowdim_keys)
         self._obs_feature_dim = (
-            len(self.rgb_keys) * projection_dim
-            + len(self.tactile_keys) * tactile_feature_dim
-            + lowdim_dim
+            len(self.rgb_keys) * projection_dim + len(self.tactile_keys) * tactile_feature_dim + lowdim_dim
         )
 
     def _encode_tactile(self, x: torch.Tensor, key: str) -> torch.Tensor:
