@@ -52,6 +52,12 @@ shape_meta:
       shape:
       - 7  # eef pose (pos + quat); on disk as "state"
       type: low_dim
+    front:
+      shape:
+      - 256
+      - 256
+      - 3
+      type: rgb
     wrist:
       shape:
       - 256
@@ -95,8 +101,9 @@ policy:
     freeze_encoder: false
     projection_dim: 128
     tactile_feature_dim: 128
-    # wrist is the only RGB camera; treat it with the wrist transform (resize 224).
-    front_camera_keys: []
+    # "front" is the fixed scene camera (crop augmentation); "wrist" uses the wrist transform.
+    front_camera_keys:
+    - front
   inference_loading: false
 task:
   dataset:
@@ -111,7 +118,7 @@ task:
     pad_before: ${eval:${task.dataset.n_obs_steps} - 1}
     seed: ${seed}
     zarr_configs:
-    - path: /home/michzeng/manifeel/data/nutbolt_quan_July1
+    - path: /data/locomotion/michzeng/manifeel/data/nutbolt_quan_July1
       max_train_episodes: null
       sampling_weight: null
       val_ratio: 0.05
@@ -130,7 +137,7 @@ training:
   lr_warmup_steps: 500
   max_train_steps: null
   max_val_steps: null
-  total_train_steps: 150000
+  total_train_steps: 50000
   num_epochs: null
   resume: false
   rollout_every: 5 # UNUSED -- no environment rollouts during training
