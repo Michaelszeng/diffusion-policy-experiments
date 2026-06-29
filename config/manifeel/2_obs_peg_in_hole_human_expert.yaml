@@ -94,7 +94,6 @@ policy:
     shape_meta: ${shape_meta}
     freeze_encoder: false
     projection_dim: 128
-    tactile_feature_dim: 128
     # wrist is the only RGB camera; treat it with the wrist transform (resize 224).
     front_camera_keys: []
   inference_loading: false
