@@ -410,51 +410,53 @@ class R3MObsEncoder(nn.Module):
         return torch.cat(features, dim=-1)
 
 
-class _TactileGridEncoder(nn.Module):
+class _TactileResNetEncoder(nn.Module):
     """
-    Small from-scratch conv encoder sized for the (10, 14) TacFF grid.
+    ResNet18 from scratch + GroupNorm + ImageNet input normalization,
+    mirroring the rgb_model path of ~/manifeel's MultiImageObsEncoder
+    (``get_resnet(resnet18, weights=null)`` + ``use_group_norm=True`` +
+    ``imagenet_norm=True``). Output is the raw 512-D ResNet18 feature
+    (no projection), matching manifeel's concat behavior.
 
-    Three Conv-GroupNorm-ReLU blocks (3→32→64→128) keep the tiny spatial
-    extent intact, then global-average-pool + linear project to
-    ``feature_dim``. GroupNorm so it's stable with bf16 / small batches.
+    Accepts CHW float input. Applies the standard ImageNet mean/std
+    normalization before the backbone.
     """
 
-    def __init__(self, in_channels: int, feature_dim: int = 128):
+    OUT_DIM = 512  # ResNet18 global avg pool output
+
+    def __init__(self):
         super().__init__()
-
-        def block(in_c: int, out_c: int) -> nn.Sequential:
-            return nn.Sequential(
-                nn.Conv2d(in_c, out_c, kernel_size=3, padding=1),
-                nn.GroupNorm(num_groups=min(8, out_c), num_channels=out_c),
-                nn.ReLU(inplace=True),
-            )
-
-        self.net = nn.Sequential(
-            block(in_channels, 32),
-            block(32, 64),
-            block(64, 128),
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(),
-            nn.Linear(128, feature_dim),
+        # _build_resnet18(pretrained=False, use_groupnorm=True) is exactly
+        # get_resnet(name='resnet18', weights=null) followed by the BN→GN
+        # replacement that MultiImageObsEncoder does when use_group_norm=True.
+        self.resnet = _build_resnet18(pretrained=False, use_groupnorm=True)
+        self.register_buffer(
+            "imagenet_mean", torch.tensor([0.485, 0.456, 0.406])[None, :, None, None]
+        )
+        self.register_buffer(
+            "imagenet_std", torch.tensor([0.229, 0.224, 0.225])[None, :, None, None]
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+        # x: (B, 3, H, W) — caller is responsible for permuting HWC→CHW.
+        x = (x - self.imagenet_mean) / self.imagenet_std
+        return self.resnet(x)
 
 
 class R3MTactileHybridObsEncoder(R3MObsEncoder):
     """
-    R3MObsEncoder + a from-scratch tactile branch.
+    R3MObsEncoder + a from-scratch ResNet18 tactile branch.
 
     shape_meta entry types:
         type="rgb"      → R3M (pretrained) per camera
-        type="tactile"  → from-scratch CNN per tactile key
+        type="tactile"  → from-scratch ResNet18 + GroupNorm per tactile key
+                          (mirrors ~/manifeel's MultiImageObsEncoder choice)
         type="low_dim"  → pass through
 
     Tactile keys are declared in shape_meta with type="tactile" and shape
     [H, W, C] (HWC, as stored in the manifeel zarrs). The encoder permutes
-    to CHW internally. Values are kept in their raw float range (the
-    dataset's per-channel LinearNormalizer brings them to [-1, 1]).
+    to CHW internally. Values are kept in their dataset-normalized range
+    (the per-channel LinearNormalizer brings them to [-1, 1]).
     """
 
     def __init__(
@@ -463,7 +465,6 @@ class R3MTactileHybridObsEncoder(R3MObsEncoder):
         freeze_encoder: bool = False,
         use_groupnorm: bool = False,
         projection_dim: int = 128,
-        tactile_feature_dim: int = 128,
         front_camera_keys: Optional[Union[str, List[str]]] = None,
         front_camera_key: Optional[str] = None,
     ):
@@ -477,22 +478,26 @@ class R3MTactileHybridObsEncoder(R3MObsEncoder):
         )
 
         obs_meta = shape_meta["obs"]
-        self.tactile_keys: List[str] = sorted([k for k, v in obs_meta.items() if v.get("type") == "tactile"])
+        self.tactile_keys: List[str] = sorted(
+            [k for k, v in obs_meta.items() if v.get("type") == "tactile"]
+        )
         # R3MObsEncoder put tactile keys into lowdim_keys; pull them out.
         self.lowdim_keys = [k for k in self.lowdim_keys if k not in self.tactile_keys]
 
         self.tactile_encoders = nn.ModuleDict()
         for k in self.tactile_keys:
             shape = obs_meta[k]["shape"]
-            assert len(shape) == 3, f"tactile key '{k}' must have HWC shape, got {shape}"
-            self.tactile_encoders[k] = _TactileGridEncoder(
-                in_channels=shape[-1],
-                feature_dim=tactile_feature_dim,
+            assert len(shape) == 3 and shape[-1] == 3, (
+                f"tactile key '{k}' must have HWC shape with C=3 (matching the "
+                f"ResNet18 input channels manifeel uses), got {shape}"
             )
+            self.tactile_encoders[k] = _TactileResNetEncoder()
 
         lowdim_dim = sum(obs_meta[k]["shape"][0] for k in self.lowdim_keys)
         self._obs_feature_dim = (
-            len(self.rgb_keys) * projection_dim + len(self.tactile_keys) * tactile_feature_dim + lowdim_dim
+            len(self.rgb_keys) * projection_dim
+            + len(self.tactile_keys) * _TactileResNetEncoder.OUT_DIM
+            + lowdim_dim
         )
 
     def _encode_tactile(self, x: torch.Tensor, key: str) -> torch.Tensor:

@@ -100,7 +100,6 @@ policy:
     shape_meta: ${shape_meta}
     freeze_encoder: false
     projection_dim: 128
-    tactile_feature_dim: 128
     # "front" is the fixed scene camera (crop augmentation); "wrist" uses the wrist transform.
     front_camera_keys:
     - front
