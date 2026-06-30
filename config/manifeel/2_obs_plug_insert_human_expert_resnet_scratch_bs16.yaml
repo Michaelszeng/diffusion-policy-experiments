@@ -9,14 +9,14 @@ checkpoint:
     mode: min
     monitor_key: val_ddim_mse_0
 dataloader:
-  batch_size: 32
+  batch_size: 16
   num_workers: 8
   persistent_workers: true
   pin_memory: true
   shuffle: true
   prefetch_factor: 1
 val_dataloader:
-  batch_size: 32
+  batch_size: 16
   num_workers: 8
   persistent_workers: true
   pin_memory: true
@@ -34,11 +34,11 @@ exp_name: defaults
 logging:  # wandb logging configuration
   group: null
   id: null
-  name: 2_obs_peg_in_hole_human_expert
+  name: 2_obs_plug_insert_human_expert_resnet_scratch_bs16
   project: manifeel_diffusion
   resume: false
 multi_run:
-  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_hybrid_manifeel_2_obs_peg_in_hole_human_expert
+  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_hybrid_manifeel_2_obs_plug_insert_human_expert_resnet_scratch_bs16
   run_dir: data/outputs/${multi_run.wandb_name_base}
 horizon: ${eval:${n_obs_steps} + 14}
 n_action_steps: 8
@@ -96,8 +96,13 @@ policy:
   num_DDIM_inference_steps: 10
   shape_meta: ${shape_meta}
   obs_encoder:
-    _target_: diffusion_policy.model.vision.r3m_config_util.R3MTactileHybridObsEncoder
+    # Manifeel-style: torchvision ResNet18 from scratch + GroupNorm + ImageNet
+    # input norm, applied to every camera (front + wrist) AND to the tactile
+    # force-field grid. No R3M weights anywhere.
+    _target_: diffusion_policy.model.vision.r3m_config_util.ResNetTactileHybridObsEncoder
     shape_meta: ${shape_meta}
+    pretrained: false       # train ResNet18 from scratch (manifeel's `weights: null`)
+    use_groupnorm: true     # replace BN with GroupNorm (manifeel's `use_group_norm: True`)
     freeze_encoder: false
     projection_dim: 128
     # "front" is the fixed scene camera (crop augmentation); "wrist" uses the wrist transform.
@@ -120,11 +125,11 @@ task:
     pad_before: ${eval:${task.dataset.n_obs_steps} - 1}
     seed: ${seed}
     zarr_configs:
-    - path: /data/locomotion/michzeng/manifeel/data/pih_quan_June06
+    - path: /data/locomotion/michzeng/manifeel/data/plug_quan_Aug02
       max_train_episodes: null
       sampling_weight: null
       val_ratio: 0.05
-  name: manifeel_peg_in_hole
+  name: manifeel_plug_insert
   shape_meta: ${shape_meta}
 task_name: manifeel
 training:

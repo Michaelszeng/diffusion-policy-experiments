@@ -9,14 +9,14 @@ checkpoint:
     mode: min
     monitor_key: val_ddim_mse_0
 dataloader:
-  batch_size: 64
+  batch_size: 32
   num_workers: 8
   persistent_workers: true
   pin_memory: true
   shuffle: true
   prefetch_factor: 1
 val_dataloader:
-  batch_size: 64
+  batch_size: 32
   num_workers: 8
   persistent_workers: true
   pin_memory: true
@@ -74,9 +74,9 @@ policy:
   _target_: diffusion_policy.policy.diffusion_unet_hybrid_image_targeted_policy.DiffusionUnetHybridImageTargetedPolicy
   diffusion_step_embed_dim: 128
   down_dims:
-  - 256
   - 512
   - 1024
+  - 2048
   kernel_size: 5
   n_groups: 8
   horizon: ${horizon}
@@ -103,6 +103,9 @@ policy:
     # "front" is the fixed scene camera (crop augmentation); "wrist" uses the wrist transform.
     front_camera_keys:
     - front
+    # Replace Resize(224) on the wrist with RandomCrop(224)/CenterCrop(224)
+    # for train/eval -- matches manifeel's `random_crop: true`.
+    wrist_random_crop: true
   inference_loading: false
 task:
   dataset:

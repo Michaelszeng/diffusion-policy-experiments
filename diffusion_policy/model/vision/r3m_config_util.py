@@ -91,6 +91,7 @@ class ResNetObsEncoder(nn.Module):
         projection_dim: int = 128,
         use_groupnorm: bool = True,
         front_camera_keys: Optional[Union[str, List[str]]] = None,
+        wrist_random_crop: bool = False,
         # Deprecated alias kept for backward compatibility
         front_camera_key: Optional[str] = None,
     ):
@@ -141,14 +142,24 @@ class ResNetObsEncoder(nn.Module):
         )
         self.front_eval_transform = T.CenterCrop((224, 224))
 
-        self.wrist_train_transform = T.Compose(
-            [
-                T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.3),
-                T.GaussianBlur(kernel_size=5, sigma=(0.01, 2.0)),
-                T.Resize((224, 224), antialias=True),
-            ]
-        )
-        self.wrist_eval_transform = T.Resize((224, 224), antialias=True)
+        if wrist_random_crop:
+            self.wrist_train_transform = T.Compose(
+                [
+                    T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.3),
+                    T.GaussianBlur(kernel_size=5, sigma=(0.01, 2.0)),
+                    T.RandomCrop((224, 224)),
+                ]
+            )
+            self.wrist_eval_transform = T.CenterCrop((224, 224))
+        else:
+            self.wrist_train_transform = T.Compose(
+                [
+                    T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.3),
+                    T.GaussianBlur(kernel_size=5, sigma=(0.01, 2.0)),
+                    T.Resize((224, 224), antialias=True),
+                ]
+            )
+            self.wrist_eval_transform = T.Resize((224, 224), antialias=True)
 
         # ── Optionally freeze encoder ──────────────────────────────────────────
         if freeze_encoder:
@@ -293,6 +304,7 @@ class R3MObsEncoder(nn.Module):
         use_groupnorm: bool = False,
         projection_dim: int = 128,
         front_camera_keys: Optional[Union[str, List[str]]] = None,
+        wrist_random_crop: bool = False,
         # Deprecated alias kept for backward compatibility
         front_camera_key: Optional[str] = None,
     ):
@@ -353,14 +365,28 @@ class R3MObsEncoder(nn.Module):
         )
         self.front_eval_transform = T.CenterCrop((224, 224))
 
-        self.wrist_train_transform = T.Compose(
-            [
-                T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.3),
-                T.GaussianBlur(kernel_size=5, sigma=(0.01, 2.0)),
-                T.Resize((224, 224), antialias=True),
-            ]
-        )
-        self.wrist_eval_transform = T.Resize((224, 224), antialias=True)
+        if wrist_random_crop:
+            # Random-crop variant: skip the resize and randomly crop 224×224
+            # from the native input at train, center-crop at eval. Mirrors
+            # the spirit of MultiImageObsEncoder's `random_crop=True`
+            # augmentation, which manifeel applies to wrist cameras.
+            self.wrist_train_transform = T.Compose(
+                [
+                    T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.3),
+                    T.GaussianBlur(kernel_size=5, sigma=(0.01, 2.0)),
+                    T.RandomCrop((224, 224)),
+                ]
+            )
+            self.wrist_eval_transform = T.CenterCrop((224, 224))
+        else:
+            self.wrist_train_transform = T.Compose(
+                [
+                    T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.3),
+                    T.GaussianBlur(kernel_size=5, sigma=(0.01, 2.0)),
+                    T.Resize((224, 224), antialias=True),
+                ]
+            )
+            self.wrist_eval_transform = T.Resize((224, 224), antialias=True)
 
     def output_shape(self) -> Tuple[int, ...]:
         return (self._obs_feature_dim,)
@@ -466,6 +492,7 @@ class R3MTactileHybridObsEncoder(R3MObsEncoder):
         use_groupnorm: bool = False,
         projection_dim: int = 128,
         front_camera_keys: Optional[Union[str, List[str]]] = None,
+        wrist_random_crop: bool = False,
         front_camera_key: Optional[str] = None,
     ):
         super().__init__(
@@ -474,6 +501,7 @@ class R3MTactileHybridObsEncoder(R3MObsEncoder):
             use_groupnorm=use_groupnorm,
             projection_dim=projection_dim,
             front_camera_keys=front_camera_keys,
+            wrist_random_crop=wrist_random_crop,
             front_camera_key=front_camera_key,
         )
 
@@ -482,6 +510,88 @@ class R3MTactileHybridObsEncoder(R3MObsEncoder):
             [k for k, v in obs_meta.items() if v.get("type") == "tactile"]
         )
         # R3MObsEncoder put tactile keys into lowdim_keys; pull them out.
+        self.lowdim_keys = [k for k in self.lowdim_keys if k not in self.tactile_keys]
+
+        self.tactile_encoders = nn.ModuleDict()
+        for k in self.tactile_keys:
+            shape = obs_meta[k]["shape"]
+            assert len(shape) == 3 and shape[-1] == 3, (
+                f"tactile key '{k}' must have HWC shape with C=3 (matching the "
+                f"ResNet18 input channels manifeel uses), got {shape}"
+            )
+            self.tactile_encoders[k] = _TactileResNetEncoder()
+
+        lowdim_dim = sum(obs_meta[k]["shape"][0] for k in self.lowdim_keys)
+        self._obs_feature_dim = (
+            len(self.rgb_keys) * projection_dim
+            + len(self.tactile_keys) * _TactileResNetEncoder.OUT_DIM
+            + lowdim_dim
+        )
+
+    def _encode_tactile(self, x: torch.Tensor, key: str) -> torch.Tensor:
+        # (B*T, H, W, C) → (B*T, C, H, W)
+        x = x.permute(0, 3, 1, 2).contiguous().float()
+        return self.tactile_encoders[key](x)
+
+    def forward(self, obs_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
+        features = []
+        for key in self.rgb_keys:
+            features.append(self._encode_image(obs_dict[key].float(), key))
+        for key in self.tactile_keys:
+            features.append(self._encode_tactile(obs_dict[key], key))
+        for key in self.lowdim_keys:
+            features.append(obs_dict[key].float())
+        return torch.cat(features, dim=-1)
+
+
+class ResNetTactileHybridObsEncoder(ResNetObsEncoder):
+    """
+    ResNetObsEncoder + a from-scratch ResNet18 tactile branch.
+
+    Mirrors ~/manifeel's MultiImageObsEncoder layout: every visual modality
+    (camera + tactile) goes through a torchvision ResNet18 trained from
+    scratch with GroupNorm + ImageNet input normalization. Use this when
+    you want a manifeel-style fully-from-scratch visual stack (no R3M).
+
+    shape_meta entry types:
+        type="rgb"      → torchvision ResNet18 per camera (from-scratch
+                          if pretrained=False, GroupNorm if use_groupnorm=True)
+        type="tactile"  → from-scratch ResNet18 + GroupNorm per tactile key
+        type="low_dim"  → pass through
+
+    Tactile keys are declared in shape_meta with type="tactile" and shape
+    [H, W, C] (HWC, as stored in the manifeel zarrs). The encoder permutes
+    to CHW internally. Values are kept in their dataset-normalized range
+    (the per-channel LinearNormalizer brings them to [-1, 1]).
+    """
+
+    def __init__(
+        self,
+        shape_meta: dict,
+        pretrained: bool = False,
+        freeze_encoder: bool = False,
+        use_groupnorm: bool = True,
+        projection_dim: int = 128,
+        front_camera_keys: Optional[Union[str, List[str]]] = None,
+        wrist_random_crop: bool = False,
+        front_camera_key: Optional[str] = None,
+    ):
+        super().__init__(
+            shape_meta=shape_meta,
+            pretrained=pretrained,
+            freeze_encoder=freeze_encoder,
+            projection_dim=projection_dim,
+            use_groupnorm=use_groupnorm,
+            front_camera_keys=front_camera_keys,
+            wrist_random_crop=wrist_random_crop,
+            front_camera_key=front_camera_key,
+        )
+
+        obs_meta = shape_meta["obs"]
+        self.tactile_keys: List[str] = sorted(
+            [k for k, v in obs_meta.items() if v.get("type") == "tactile"]
+        )
+        # ResNetObsEncoder put tactile keys into lowdim_keys; pull them out.
         self.lowdim_keys = [k for k in self.lowdim_keys if k not in self.tactile_keys]
 
         self.tactile_encoders = nn.ModuleDict()

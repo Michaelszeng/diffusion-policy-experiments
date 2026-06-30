@@ -6,6 +6,7 @@
 # SOURCE_DIR="data/outputs/robomimic/"
 # SOURCE_DIR="data/outputs/maniskill/"
 # SOURCE_DIR="data/outputs/isaac_sim/"
+SOURCE_DIR="data/outputs/manifeel/"
 
 # SOURCE_DIR="/home/michzeng/benchmark-furniturebench-juicer/dataset/raw/sim/one_leg/"
 # TARGET_DIR="/data/locomotion/michzeng/benchmark-furniturebench-juicer/dataset/raw/sim/one_leg/dagger_iter2_ah1_nm"
@@ -60,6 +61,10 @@
 # TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/furniture_bench_context_ablation/2_obs_one_leg_teleop_r3m_cross_attn_scripted_non_markovian_100_eps"
 
 # TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/isaac_sim/2_obs_gear_assembly_human_expert"
+
+# TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/manifeel/2_obs_peg_in_hole_human_expert_"
+# TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/manifeel/2_obs_plug_insert_human_expert_"
+TARGET_DIR="/data/locomotion/michzeng/diffusion-policy-experiments/data/outputs/manifeel/2_obs_nut_bolt_human_expert_"
 
 ####################################################################################
 
