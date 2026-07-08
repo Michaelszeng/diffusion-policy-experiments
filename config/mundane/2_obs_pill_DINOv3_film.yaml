@@ -11,14 +11,14 @@ checkpoint:
 dataloader:
   batch_size: 48
   num_workers: 8
-  persistent_workers: true
+  persistent_workers: True
   pin_memory: true
   shuffle: true
   prefetch_factor: 1
 val_dataloader:
   batch_size: 48
   num_workers: 8
-  persistent_workers: true
+  persistent_workers: True
   pin_memory: true
   drop_last: true  # Drop the last batch if it's not full
   shuffle: true
@@ -34,14 +34,14 @@ exp_name: defaults
 logging:  # wandb logging configuration
   group: null
   id: null
-  name: mundane_8_obs_pill_v6_dinov3_attention_double_enc
+  name: mundane_2_obs_pill_v6_DINOv3_film
   project: mundane_pill
 multi_run:
-  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_timm_mundane_8_obs_pill_v6_dinov3_attention_double_enc
+  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_train_diffusion_unet_timm_mundane_2_obs_pill_v6_DINOv3_film
   run_dir: data/outputs/${multi_run.wandb_name_base}
 horizon: ${eval:${n_obs_steps} + 14}
 n_action_steps: 8  # Inference-only parameter
-n_obs_steps: 8  # Number of observation steps to condition on
+n_obs_steps: 2  # Number of observation steps to condition on
 shape_meta:
   action:
     shape:
@@ -62,7 +62,7 @@ shape_meta:
       - 224
       - 224
       type: rgb
-    camera_408322070972_rgb:
+    camera_317622071752_rgb:
       shape:
       - 3
       - 224
@@ -96,7 +96,7 @@ shape_meta:
       - 1
       type: low_dim
 policy:  # Parameters to be passed to policy (i.e. the _target_ policy class below)
-  _target_: diffusion_policy.policy.diffusion_unet_timm_attention_policy.DiffusionUnetTimmAttentionPolicy
+  _target_: diffusion_policy.policy.diffusion_unet_timm_film_policy.DiffusionUnetTimmFilmPolicy
   shape_meta: ${shape_meta}
   horizon: ${horizon}
   obs_encoder:
@@ -105,22 +105,9 @@ policy:  # Parameters to be passed to policy (i.e. the _target_ policy class bel
     model_name: vit_base_patch16_dinov3.lvd1689m
     pretrained: true
     n_obs_steps: ${n_obs_steps}
-    feature_aggregation: cls  # 1 token per (key, timestep) → cross-attn over (n_keys * n_obs_steps) tokens
+    feature_aggregation: cls
     crop_ratio: 0.9    # effective crop: floor(224*0.9 / 16) * 16 = 192px
     imagenet_norm: true
-  # Separate encoder for the most recent short_range_obs_horizon frames. Identical config to
-  # obs_encoder except n_obs_steps; weights are independent (both load pretrained init).
-  short_range_encoder:
-    _target_: diffusion_policy.model.vision.timm_obs_encoder.TimmObsEncoder
-    shape_meta: ${shape_meta}
-    model_name: vit_base_patch16_dinov3.lvd1689m
-    pretrained: true
-    n_obs_steps: ${policy.short_range_obs_horizon}
-    feature_aggregation: cls
-    crop_ratio: 0.9
-    imagenet_norm: true
-  short_range_obs_horizon: 2  # Most recent 2 frames also encoded by short_range_encoder; null to disable
-  short_range_dropout: 0.3    # Per-sample probability of replacing short-range tokens with null token during training
   noise_scheduler:
     _target_: diffusers.schedulers.scheduling_ddpm.DDPMScheduler
     beta_end: 0.02
@@ -139,11 +126,6 @@ policy:  # Parameters to be passed to policy (i.e. the _target_ policy class bel
   - 1024
   kernel_size: 5  # kernel size (in time-dimension) for 1D convolutions in UNet
   n_groups: 8  # Number of groups for group norm
-  num_attention_heads: 8
-  attention_dropout: 0.1
-  use_temporal_pos_emb: true
-  use_modality_emb: true
-  use_range_emb: true
   input_pertub: 0.1
 task:
   dataset:
@@ -156,9 +138,10 @@ task:
     seed: ${seed}
     action_key: action  # use "action_follower" to train against the executed-pose stream instead
     downsample_steps: 3  # zarr is 30 Hz; stride 3 → policy sees 10 Hz obs/action sequences
+    cache_dir: ~/.cache/mundane_datasets  # share dataset across GPU procs via LMDB+mmap (saves ~2/3 RAM at 3 GPUs)
     zarr_configs:
-    - path: data/diffusion_experiments/mundane/pill_v6.zarr
-      max_train_episodes: null
+    - path: /home/data_storage/pill_v6.zarr
+      max_train_episodes: null  # 502 episodes total; ~5% held out for validation
       sampling_weight: null
       val_ratio: 0.01
   name: mundane_pill
@@ -184,7 +167,7 @@ training:
   rollout_every: 5  # UNUSED -- no environment rollouts during training
   sample_every: ${training.checkpoint_every}  # validation using DDPM output
   seed: ${seed}
-  tqdm_interval_sec: 30.0
+  tqdm_interval_sec: 1.0
   use_ema: true
   val_every: 1
   log_val_mse: true
