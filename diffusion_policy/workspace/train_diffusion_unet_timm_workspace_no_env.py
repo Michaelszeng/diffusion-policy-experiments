@@ -134,7 +134,23 @@ class TrainDiffusionUnetTimmWorkspaceNoEnv(BaseWorkspace):
                 if ckpt_path.is_file():
                     accelerator.print(f"Resuming from user-specified checkpoint {ckpt_path}")
                     self.load_checkpoint(path=ckpt_path)
-                    self.epoch += 1
+                    if getattr(cfg.training, "reset_step_counter_on_warmstart", False):
+                        # Warm-starting from a *different* run's checkpoint (e.g. fine-tuning).
+                        # Discard the loaded run's step/epoch bookkeeping and top-k history so
+                        # that total_train_steps counts steps taken in THIS run (additional
+                        # steps), with a fresh LR warmup/decay schedule. On requeue the sbatch
+                        # sets checkpoint_path=null, so resumes go through the latest.ckpt branch
+                        # below (which preserves the counter) and still converge to the same
+                        # fixed total-step target for this run.
+                        accelerator.print(
+                            "reset_step_counter_on_warmstart=True: resetting global_step/epoch to 0 "
+                            "so total_train_steps counts steps taken in THIS run."
+                        )
+                        self.global_step = 0
+                        self.epoch = 0
+                        self.topk_managers = None
+                    else:
+                        self.epoch += 1
                 else:
                     accelerator.print(f"ATTENTION: Resume requested but checkpoint {ckpt_path} not found. Starting from scratch.")
             else:
