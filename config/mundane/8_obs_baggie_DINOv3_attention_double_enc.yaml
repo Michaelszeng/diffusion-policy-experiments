@@ -160,7 +160,7 @@ task:
     - path: data/diffusion_experiments/mundane/baggie_v4.zarr
       max_train_episodes: null
       sampling_weight: null
-      val_ratio: 0.01
+      val_ratio: 0.02
   name: mundane_baggie
   shape_meta: ${shape_meta}
 task_name: mundane_baggie
