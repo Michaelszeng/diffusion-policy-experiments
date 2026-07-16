@@ -389,8 +389,14 @@ class BaseImageDataset(torch.utils.data.Dataset):
         # Iterate over each dataset's replay buffer; find global min/max for each key across all datasets
         # and store in input_states
         for buf in self.replay_buffers:
-            # Extract data from replay buffer for each key
-            data = {norm_key: buf[buf_key] for norm_key, buf_key in key_map.items()}
+            # Extract data from replay buffer for each key. Subclasses may
+            # transform a raw buffer array before statistics are computed (e.g.
+            # slicing a proprioceptive prefix out of a larger state vector); the
+            # default is identity.
+            data = {
+                norm_key: self._prepare_lowdim_for_norm(norm_key, buf[buf_key])
+                for norm_key, buf_key in key_map.items()
+            }
             # We then fit a normalizer for each key; we don't keep this normalizer, we just do this
             # since it's the easiest way to find the min/max for this key for this dataset.
             n = LinearNormalizer()
@@ -414,6 +420,17 @@ class BaseImageDataset(torch.utils.data.Dataset):
         for key in self.rgb_keys:
             normalizer[key] = get_image_passthrough_normalizer()
         return normalizer
+
+    def _prepare_lowdim_for_norm(self, norm_key: str, arr):
+        """Transform a raw low-dim buffer array before normalizer statistics are
+        computed.
+
+        Defaults to identity. Subclasses may override to, e.g., slice a
+        proprioceptive prefix out of a larger state vector. Any transform here
+        MUST match the one applied to the same key in ``__getitem__`` so that
+        training samples and normalizer statistics stay consistent.
+        """
+        return arr
 
     def load_replay_buffer(self, path: str, keys: List[str], config: Dict):
         """Load data from path into a ReplayBuffer for one dataset config."""
