@@ -76,6 +76,18 @@ class DiffusionUnetTimmFilmPolicy(BaseImagePolicy):
         self.num_inference_steps = num_DDPM_inference_steps
         self.num_ddim_inference_steps = num_ddim_inference_steps
 
+    def _encode_obs(self, nobs: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Returns a flat global conditioning vector (B, cat_output_dim) from the obs encoder.
+
+        The dataset returns each obs key with length == prediction horizon (because the
+        sampler pads up to sequence_length); only the first n_obs_steps frames are real
+        observations — the rest is NaN/zero padding from key_first_k. Slice down here so
+        the encoder produces exactly n_keys * n_obs_steps features (matching cat_output_dim).
+        """
+        To = self.obs_encoder.n_obs_steps
+        nobs = {k: v[:, :To] for k, v in nobs.items()}
+        return self.obs_encoder(nobs, output_format="cat")
+
     # ── Inference ──────────────────────────────────────────────────────────────
 
     def conditional_sample(
@@ -127,7 +139,7 @@ class DiffusionUnetTimmFilmPolicy(BaseImagePolicy):
         ):
             nobs = self.normalizer.normalize(obs_dict)
             B = next(iter(nobs.values())).shape[0]
-            global_cond = self.obs_encoder(nobs, output_format="cat")
+            global_cond = self._encode_obs(nobs)
 
             inpaint_data = torch.zeros(
                 B, self.prediction_horizon, self.action_dim, device=self.device, dtype=self.dtype
@@ -153,7 +165,7 @@ class DiffusionUnetTimmFilmPolicy(BaseImagePolicy):
         nobs = self.normalizer.normalize(batch["obs"])
         nactions = self.normalizer["action"].normalize(batch["action"])
 
-        global_cond = self.obs_encoder(nobs, output_format="cat")
+        global_cond = self._encode_obs(nobs)
         trajectory = nactions
         noise = torch.randn(trajectory.shape, device=trajectory.device, dtype=self.dtype)
         # Input perturbation to alleviate exposure bias (https://github.com/forever208/DDPM-IP)
