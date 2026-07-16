@@ -50,7 +50,7 @@ shape_meta:
   obs:
     agent_pos:
       shape:
-      - 60  # robot + env state from zarr "state" array
+      - 9  # proprioception only: robot joint positions (7 arm + 2 gripper); privileged obj_qp + goal dims dropped by FrankaKitchenDataset
       type: low_dim
     scene:
       shape:
