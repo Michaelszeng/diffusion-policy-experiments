@@ -1,6 +1,15 @@
 # Diffusion Policy Experiments
 
-Michael's personal diffusion policy experiments/implementation/research in the Robot Locomotion Group, based off of [original diffusion policy paper](https://diffusion-policy.cs.columbia.edu/) and work done by Abhinav Agarwal and Adam Wei.
+Michael's diffusion policy training repository based off of [original diffusion policy paper](https://diffusion-policy.cs.columbia.edu/) and work done by Abhinav Agarwal and Adam Wei. This is a much cleaned-up version of the original repo.
+
+This codebase currently implements only U-Net-based architectures, and supports Robomimic, R3M, and from-scratch ResNet image encoders as well as Timm image encoders (including CLIP and DINOv3). Architectures include both traditional FiLM-conditioned U-Nets, cross-attention conditioned U-Nets from [1](https://dp-with-long-context.github.io/), and cross-attention conditioned U-Nets with the double-encoder from [2](TODO).
+
+Additional Features:
+- Multi-GPU training via HuggingFace `accelerate`
+- `bf16`-mixed precision
+- Multi-dataset mixing via weighted `zarr_configs` (episode caps + sampling weights)
+- Long observation horizons with efficient `key_first_k` sampling (only the used obs steps are loaded)
+
 
 ## Installation
 
@@ -32,18 +41,7 @@ poetry install
 source $(poetry env info --path)/bin/activate
 ```
 
-### Supercloud Installation:
-```bash
-module load anaconda/2023b
-pip install huggingface-hub==0.25.2 --no-deps
-pip install diffusers==0.11.1 --no-deps
-pip install numba==0.60.0
-pip install wandb
-pip install einops
-pip install zarr
-```
-
-### CSAIL SLURM Cluster Installation
+### SLURM Cluster Installation
 
 ```bash
 python3 -m venv env --without-pip
@@ -53,51 +51,44 @@ python3 /tmp/get-pip.py --no-warn-script-location
 pip install -r requirements.txt
 ```
 
+### Secrets (Weights & Biases)
 
-### Obtaining Training Data
-Obtain `sim_sim_tee_data_carbon_large.zarr` from Adam Wei. Place in `data/diffusion_experiments/planar_pushing/sim_sim_tee_data_carbon_large.zarr` folder.
+Training scripts expect a `.secrets` file with your W&B API key. Copy the template and fill in your key:
+
+```bash
+cp .secrets.template .secrets
+```
+
+Then edit `.secrets` and replace `your_wandb_api_key_here` with your key from [wandb.ai/authorize](https://wandb.ai/authorize). `.secrets` is gitignored — never commit it.
 
 
 ## Running
 
-### Pre-processing:
-First, ensure your dataset is in the diffusion policy Zarr format. You need to develop/run the appropriate dataset conversion script to make this so.
-
-Then, to prune idle frames from the dataset:
-```bash
-python prune_idle.py data/diffusion_experiments/planar_pushing/sim_sim_tee_data_carbon_large.zarr --obs-horizon 3 --idle-tolerance 0.003
-```
-
+Before training policy, you must write a `.yaml` config file that defines the policy architecture, dataset path, and various training parameters. See `config/` for examples.
 
 ### Running locally:
 ```bash
 python train.py --config-dir=config/planar_pushing --config-name=2_obs.yaml hydra.run.dir=data/outputs/planar_pushing/2_obs/ dataloader.batch_size=4 val_dataloader.batch_size=4
 ```
 
-Add `training.resume=True` to resume an existing run
+To resume training from an interrupted run: in your config file, set `training.resume: true`. Optionally (recommended), also set `logging.resume: true` and set `logging.id` to the wandb ID that you want to continue from (i.e. "thfb8nrq" for training run `data/outputs/maniskill/2_obs/wandb/offline-run-20251118_134543-thfb8nrq`).
 
-### Running on Supercloud:
+
+### Running on a SLURM Cluster:
+
+Set your cluster parameters at the top of the sbatch file, then set your config directory and name, then:
+
 ```bash
-# Interactively:
-LLsub -i -s 40 -g volta:2
-module load anaconda/2023b
-wandb offline  # Supercloud compute nodes have no internet
-python train.py --config-dir=config/planar_pushing --config-name=2_obs.yaml hydra.run.dir=data/outputs/planar_pushing/2_obs/
-
-# Non-interactively:
-LLsub ./submit_training.sh -s 20 -g volta:1
+sbatch submit_training_cluster.sbatch
 ```
 
-### Resuming Training:
-
-In your config file, set `training.resume: true`. Optionally (recommended), also set `logging.resume: true` and set `logging.id` to the wandb ID that you want to continue from (i.e. "thfb8nrq" for training run `data/outputs/maniskill/2_obs/wandb/offline-run-20251118_134543-thfb8nrq`).
 
 
 ## Important Configurations
 
-Probably the most important configurations are `horizon`, `n_obs_steps`, and `past_action_visible`.
+Probably the most important configurations are `horizon` (the prediction horizon) and `n_obs_steps` (the observation horizon/context length).
 
-`n_obs_steps` overlaps with `horizon` in this sense:
+Note that `n_obs_steps` overlaps with `horizon` in this sense:
 ```
 time axis :  0 1 | 2 3 4 … 15
              ^^^^^ n_obs_steps = 2
@@ -110,9 +101,28 @@ t = 0,1     … To-1        (past two actions)      ← have already happened
 t = 2 … 15                  (future actions)      ← should be predicted
 ```
 
-The network will learn to re-predict those already-executed actions.
-
-If `past_actions_visible` is true, then the first `n_obs_steps - 1` ground-truth (unnoised) steps will be passed to the model effectively as conditioning, and loss will be compared only against the last `horizon - (n_obs_steps - 1)` predicted actions. (Note that we subtract `1` from `n_obs_steps` because actions happen after observations; i.e. if we have 2 observations, then we have already executed the action for the first observation, and need to predict the action for corresponding to the second observation).
+The network will learn to re-predict those already-executed actions as an auxiliary prediction objective.
 
 
-Note that this implementation uses global observation conditioning (i.e. observations are not part of per-timestep token, if transformer variant is used).
+## Running Inference
+
+This repo primarily handles policy training, and assumes the evaluation environment will provide scripts for loading the policy checkpoint and querying it.
+
+However, `policy_inference.py` exists for running inference on hardware setups; the script loads a trained checkpoint, binds a ZMQ REP socket, and, when a client sends a request, the script runs the policy and serves the outputted action predictions. Specifically, clients send an observation window (raw PNG frames for the newest timesteps, optionally cached encoder features for older ones, plus low-dim state) to the ZMQ server; the server encodes only the new frames, runs DDIM/DDPM denoising, and returns the predicted future actions along with the newly computed features so the client can keep its cache. It currently supports `DiffusionUnetTimmAttentionPolicy` and `DiffusionUnetTimmFilmPolicy`.
+
+```bash
+python policy_inference.py -i path/to/checkpoint.ckpt --ip 0.0.0.0 --port 8766 --device cuda:0
+```
+
+You will have to write the client-side yourself.
+
+
+
+
+## Citation
+
+If you use this repo in your work, please cite [Revisiting Open-Loop Execution in Robotics: Toward Reactive, Higher-Performing Policies]():
+
+```
+TODO
+```
