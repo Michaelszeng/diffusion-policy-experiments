@@ -137,6 +137,13 @@ task:
     pad_before: ${eval:${task.dataset.n_obs_steps} - 1}
     seed: ${seed}
     action_key: action  # use "action_follower" to train against the executed-pose stream instead
+    color_jitter:  # RGB augmentation during training; same random transform shared across cameras
+      brightness: 0.15
+      contrast: 0.2
+      saturation: 0.2
+      hue: 0.04
+    random_rotation:  # RGB augmentation during training; same random angle shared across cameras/frames
+      degrees: 5
     downsample_steps: 3  # zarr is 30 Hz; stride 3 → policy sees 10 Hz obs/action sequences
     cache_dir: ~/.cache/mundane_datasets  # share dataset across GPU procs via LMDB+mmap (saves ~2/3 RAM at 3 GPUs)
     zarr_configs:
