@@ -29,7 +29,7 @@ EXPERIMENT_NAME=2_obs_pill_DINOv3_film
 
 CONFIG_DIR=config/${EXPERIMENT_CLASS}
 CONFIG_NAME=${EXPERIMENT_NAME}.yaml
-HYDRA_RUN_DIR=data/outputs/${EXPERIMENT_CLASS}/${EXPERIMENT_NAME}_pillv5
+HYDRA_RUN_DIR=data/outputs/${EXPERIMENT_CLASS}/${EXPERIMENT_NAME}_pill_v7
 # ============================================================================
 
 DATE=`date +"%Y.%m.%d"`

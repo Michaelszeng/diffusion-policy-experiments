@@ -138,8 +138,9 @@ task:
     seed: ${seed}
     action_key: action  # use "action_follower" to train against the executed-pose stream instead
     downsample_steps: 3  # zarr is 30 Hz; stride 3 → policy sees 10 Hz obs/action sequences
+    cache_dir: ~/.cache/mundane_datasets  # share dataset across GPU procs via LMDB+mmap (saves ~2/3 RAM at 3 GPUs)
     zarr_configs:
-    - path: /home/data_storage/baggie_v1.zarr
+    - path: /home/data_storage/baggie_v2.zarr
       max_train_episodes: null  # 502 episodes total; ~5% held out for validation
       sampling_weight: null
       val_ratio: 0.01
