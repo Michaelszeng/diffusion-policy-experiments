@@ -50,6 +50,7 @@ import omegaconf
 import torch
 import zmq
 
+from diffusion_policy.common.inference_accel import apply_acceleration
 from diffusion_policy.policy.base_image_policy import BaseImagePolicy
 from diffusion_policy.policy.diffusion_unet_timm_attention_policy import (
     DiffusionUnetTimmAttentionPolicy,
@@ -78,6 +79,14 @@ class PolicyInferenceNode:
         num_ddim_inference_steps: int = 10,
         use_ddim: bool = True,
         gripper_multiplier: float = 1.5,
+        # Acceleration knobs — all default OFF so a bare run == original behavior.
+        amp: str = "no",
+        tf32: bool = False,
+        camera_batch: bool = False,
+        compile_backbone: bool = False,
+        compile_unet: bool = False,
+        compile_mode: str = "default",
+        compile_unet_mode: str = "default",
     ):
         # Load checkpoint (accept either a .ckpt or a run dir) and dump the cfg.
         self.ckpt_path = ckpt_path
@@ -118,6 +127,22 @@ class PolicyInferenceNode:
         if hasattr(self.policy, "num_ddim_inference_steps"):
             self.policy.num_ddim_inference_steps = num_ddim_inference_steps
         self.use_ddim = use_ddim
+
+        # Apply inference-acceleration knobs. With every knob at its default (all OFF), this is a
+        # verified no-op — it only re-asserts PyTorch's defaults — so a bare run matches the
+        # original behavior exactly. Acceleration engages only when a flag is turned on.
+        # NOTE: --compile-unet with --unet-compile-mode reduce-overhead is NOT RTC-safe (the RTC
+        # path backprops through the UNet) — see diffusion_policy/common/inference_accel.py.
+        apply_acceleration(
+            self.policy,
+            amp=amp,
+            tf32=tf32,
+            camera_batch=camera_batch,
+            compile_backbone=compile_backbone,
+            compile_unet=compile_unet,
+            compile_mode=compile_mode,
+            compile_unet_mode=compile_unet_mode,
+        )
 
         # Cache obs structure; sort-order must match TimmObsEncoder's internal ordering.
         obs_shape_meta = self.cfg.task.shape_meta.obs
@@ -306,7 +331,22 @@ class PolicyInferenceNode:
 @click.option("--ddpm", is_flag=True, help="Use DDPM sampler instead of DDIM")
 @click.option("--gripper-multiplier", default=1.5, type=float,
               help="Scale factor applied to gripper columns of returned action. Default: 1.5. Pass 1.0 to disable.")
-def main(input, ip, port, device, steps, ddpm, gripper_multiplier):
+# ── Acceleration (all OFF by default → bare run == original behavior) ──────────────────────
+@click.option("--tf32/--no-tf32", default=False,
+              help="TF32 matmul + cuDNN autotune. Default: OFF. ~1.8x (FiLM)/1.3x (attn), drift ~1e-4.")
+@click.option("--camera-batch/--no-camera-batch", default=False,
+              help="Batch all cameras into one backbone call. Default: OFF. Free, numerically exact, +7-9%.")
+@click.option("--amp", type=click.Choice(["no", "bf16", "fp16"]), default="no",
+              help="Autocast the backbone (+ FiLM UNet) to bf16/fp16. Default: no. Prefer fp16.")
+@click.option("--compile-backbone", is_flag=True, help="torch.compile the ViT backbone(s). Small win.")
+@click.option("--compile-unet", is_flag=True,
+              help="torch.compile the denoising UNet (biggest lever). NOT RTC-safe with --unet-compile-mode reduce-overhead.")
+@click.option("--compile-mode", type=click.Choice(["default", "reduce-overhead", "max-autotune"]),
+              default="default", help="torch.compile mode for the BACKBONE (cudagraph modes auto-downgraded).")
+@click.option("--unet-compile-mode", type=click.Choice(["default", "reduce-overhead", "max-autotune"]),
+              default="default", help="torch.compile mode for the UNet. reduce-overhead is fastest but NOT RTC-safe.")
+def main(input, ip, port, device, steps, ddpm, gripper_multiplier,
+         tf32, camera_batch, amp, compile_backbone, compile_unet, compile_mode, unet_compile_mode):
     node = PolicyInferenceNode(
         ckpt_path=input,
         ip=ip,
@@ -315,6 +355,13 @@ def main(input, ip, port, device, steps, ddpm, gripper_multiplier):
         num_ddim_inference_steps=steps,
         use_ddim=not ddpm,
         gripper_multiplier=gripper_multiplier,
+        amp=amp,
+        tf32=tf32,
+        camera_batch=camera_batch,
+        compile_backbone=compile_backbone,
+        compile_unet=compile_unet,
+        compile_mode=compile_mode,
+        compile_unet_mode=unet_compile_mode,
     )
     node.run_node()
 

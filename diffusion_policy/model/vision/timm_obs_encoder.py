@@ -295,25 +295,47 @@ class TimmObsEncoder(ModuleAttrMixin):
         device = next(self.parameters()).device
         newly_encoded: Dict[str, List[torch.Tensor]] = {}
 
-        # Per rgb key: one backbone pass over the raw frames, then concat cached + new along time.
-        encoded: Dict[str, torch.Tensor] = {}
         for key in self.rgb_keys:
-            raws = nobs_rgb_raw.get(key, [])
-            cached = cached_rgb.get(key, [])
-            assert len(cached) + len(raws) == To, (
-                f"key={key!r}: cached ({len(cached)}) + raw ({len(raws)}) != n_obs_steps ({To})"
+            assert len(cached_rgb.get(key, [])) + len(nobs_rgb_raw.get(key, [])) == To, (
+                f"key={key!r}: cached ({len(cached_rgb.get(key, []))}) + "
+                f"raw ({len(nobs_rgb_raw.get(key, []))}) != n_obs_steps ({To})"
             )
 
-            # Backbone pass over raw frames (one stacked call per key).
-            if raws:
-                stacked = torch.stack(raws, dim=0).unsqueeze(0).to(device)  # (1, n_raw, C, H, W)
-                new_feats = self._process_rgb(stacked)  # (1, n_raw, D)
-                newly_encoded[key] = [new_feats[0, i] for i in range(len(raws))]
-            else:
-                newly_encoded[key] = []
+        # Backbone pass(es) over the raw frames. Default: one call per rgb key. With
+        # ``batch_rgb_inference=True`` (inference-only toggle, set by inference_accel.set_camera_batch),
+        # stack the raw frames from ALL rgb keys into ONE batched backbone call. The ViT has no
+        # cross-batch ops, so this is numerically identical, but it replaces N batch-1 launches with
+        # one batch-N launch (fewer kernel launches, better GPU occupancy). All rgb keys share the
+        # same (H, W) by construction, so they batch cleanly.
+        if getattr(self, "batch_rgb_inference", False):
+            flat, counts = [], {}
+            for key in self.rgb_keys:
+                raws = nobs_rgb_raw.get(key, [])
+                counts[key] = len(raws)
+                flat.extend(raws)
+            feats = None
+            if flat:
+                batched = torch.stack(flat, dim=0).unsqueeze(0).to(device)  # (1, sum_n_raw, C,H,W)
+                feats = self._process_rgb(batched)[0]  # (sum_n_raw, D)
+            i = 0
+            for key in self.rgb_keys:
+                n = counts[key]
+                newly_encoded[key] = [feats[i + j] for j in range(n)] if n else []
+                i += n
+        else:
+            for key in self.rgb_keys:
+                raws = nobs_rgb_raw.get(key, [])
+                if raws:
+                    stacked = torch.stack(raws, dim=0).unsqueeze(0).to(device)  # (1, n_raw, C, H, W)
+                    new_feats = self._process_rgb(stacked)  # (1, n_raw, D)
+                    newly_encoded[key] = [new_feats[0, i] for i in range(len(raws))]
+                else:
+                    newly_encoded[key] = []
 
-            # Cached features (oldest positions) followed by freshly-encoded features (newest positions).
-            all_feats = [c.to(device) for c in cached] + newly_encoded[key]
+        # Cached features (oldest positions) then freshly-encoded features (newest positions).
+        encoded: Dict[str, torch.Tensor] = {}
+        for key in self.rgb_keys:
+            all_feats = [c.to(device) for c in cached_rgb.get(key, [])] + newly_encoded[key]
             encoded[key] = torch.stack(all_feats, dim=0).unsqueeze(0)  # (1, To, D)
 
         # Low-dim keys
