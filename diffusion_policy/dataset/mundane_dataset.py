@@ -45,6 +45,8 @@ class MundaneDataset(BaseZarrImageDataset):
         seed:             RNG seed for train/val splits.
         val_ratio:        Default validation fraction (overridden per zarr_config).
         color_jitter:     Optional color-jitter config dict (passed to base class).
+        random_rotation:  Optional random-rotation config dict (passed to base class).
+                          Scalar or dict with ``degrees``/``fill``/``expand``.
         action_key:       Which zarr array to use as the training target:
                             ``"action"``          leader-side actions (default)
                             ``"action_follower"`` follower executed poses
@@ -63,6 +65,7 @@ class MundaneDataset(BaseZarrImageDataset):
         seed: int = 42,
         val_ratio: float = 0.0,
         color_jitter: Optional[Dict] = None,
+        random_rotation: Optional[Dict] = None,
         action_key: str = "action",
         downsample_steps: int = 1,
     ):
@@ -84,6 +87,7 @@ class MundaneDataset(BaseZarrImageDataset):
             seed=seed,
             val_ratio=val_ratio,
             color_jitter=color_jitter,
+            random_rotation=random_rotation,
         )
 
     # ── BaseZarrImageDataset hooks ──────────────────────────────────────────────
@@ -140,5 +144,8 @@ class MundaneDataset(BaseZarrImageDataset):
 
         if self.transforms is not None and self.rgb_keys:
             data = self._apply_color_jitter(data)
+
+        if self.rotation_transforms is not None and self.rgb_keys:
+            data = self._apply_random_rotation(data)
 
         return dict_apply(data, torch.from_numpy)

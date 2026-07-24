@@ -281,7 +281,9 @@ class BaseImageDataset(torch.utils.data.Dataset):
 
     Concrete methods provided here:
         get_default_color_jitter - builds a ColorJitter from a config dict
+        get_default_random_rotation - builds a RandomRotation from a config dict
         _apply_color_jitter      - applies ``self.transforms`` to all RGB obs keys
+        _apply_random_rotation   - applies ``self.rotation_transforms`` to all RGB obs keys
         _build_key_first_k       - builds ImprovedDatasetSampler read-cap dict
         _normalize_sample_probabilities
         get_num_datasets         - returns ``self.num_datasets``
@@ -315,6 +317,27 @@ class BaseImageDataset(torch.utils.data.Dataset):
             hue=color_jitter.get("hue", 0.15),
         )
 
+    @staticmethod
+    def get_default_random_rotation(
+        random_rotation: Optional[Dict],
+    ) -> Optional[transforms.RandomRotation]:
+        """Build a RandomRotation transform from a config dict, or return None.
+
+        Accepts either a scalar (interpreted as ``degrees``) or a dict with
+        keys ``degrees`` (float or [min, max]), ``fill`` (border fill value),
+        and ``expand`` (keep output size when False).
+        """
+        if random_rotation is None:
+            return None
+        if isinstance(random_rotation, (int, float)):
+            random_rotation = {"degrees": random_rotation}
+        return transforms.RandomRotation(
+            degrees=random_rotation.get("degrees", 5.0),
+            interpolation=transforms.InterpolationMode.BILINEAR,
+            expand=random_rotation.get("expand", False),
+            fill=random_rotation.get("fill", 0),
+        )
+
     def _apply_color_jitter(self, data: Dict) -> Dict:
         """Jitter all RGB cameras with the same random transform.
 
@@ -330,6 +353,28 @@ class BaseImageDataset(torch.utils.data.Dataset):
         jittered = np.moveaxis(jittered, 1, -1) * 255.0
         for i, key in enumerate(keys):
             data["obs"][key] = jittered[i * T : (i + 1) * T]
+        return data
+
+    def _apply_random_rotation(self, data: Dict) -> Dict:
+        """Rotate all RGB cameras by the same random angle.
+
+        A single angle is sampled per sample and shared across every camera
+        and every frame in the observation history (temporal + cross-camera
+        consistency), matching the color-jitter convention. Uncovered corners
+        are filled with the configured fill value (default black).
+
+        Input:  uint8 or float32 HWC [0, 255]
+        Output: float32 HWC [0, 255]  (same layout as the passthrough normalizer expects)
+        """
+        keys = self.rgb_keys
+        T = data["obs"][keys[0]].shape[0]
+        # HWC[0,255] → CHW[0,255] for torchvision (rotation is range-agnostic)
+        stacked = np.moveaxis(np.concatenate([data["obs"][k] for k in keys], axis=0), -1, 1).astype(np.float32)
+        rotated = self.rotation_transforms(torch.from_numpy(stacked)).numpy()
+        # CHW[0,255] → HWC[0,255]
+        rotated = np.moveaxis(rotated, 1, -1)
+        for i, key in enumerate(keys):
+            data["obs"][key] = rotated[i * T : (i + 1) * T]
         return data
 
     @staticmethod
@@ -483,6 +528,7 @@ class BaseZarrImageDataset(BaseImageDataset):
         seed: int = 42,
         val_ratio: float = 0.0,
         color_jitter: Optional[Dict] = None,
+        random_rotation: Optional[Dict] = None,
     ):
         super().__init__()
         self._validate_zarr_configs(zarr_configs)
@@ -533,6 +579,7 @@ class BaseZarrImageDataset(BaseImageDataset):
         self.pad_after = pad_after
         self.n_obs_steps = n_obs_steps
         self.transforms = self.get_default_color_jitter(color_jitter)
+        self.rotation_transforms = self.get_default_random_rotation(random_rotation)
 
     def _get_buffer_keys(self) -> List[str]:
         """Return the list of keys to load from the zarr store."""
@@ -662,6 +709,10 @@ class BaseZarrImageDataset(BaseImageDataset):
             assert self.num_datasets == 1, "Must specify index if num_datasets > 1"
             index = 0
         val_set = copy.copy(self)
+        # Image augmentations are train-only; disable them on the validation copy
+        # so val metrics are computed on clean, deterministic observations.
+        val_set.transforms = None
+        val_set.rotation_transforms = None
         val_set.num_datasets = 1
         val_set.replay_buffers = [self.replay_buffers[index]]
         val_set.train_masks = [self.train_masks[index]]
