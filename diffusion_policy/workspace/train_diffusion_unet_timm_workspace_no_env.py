@@ -29,6 +29,7 @@ from diffusion_policy.common.pytorch_util import dict_apply
 from diffusion_policy.dataset.base_dataset import BaseImageDataset
 from diffusion_policy.model.common.lr_scheduler import get_scheduler
 from diffusion_policy.model.diffusion.ema_model import EMAModel
+from diffusion_policy.model.vision.batch_image_augmentation import BatchImageAugmentor
 from diffusion_policy.workspace.base_workspace import BaseWorkspace
 
 OmegaConf.register_new_resolver("eval", eval, replace=True)
@@ -170,6 +171,30 @@ class TrainDiffusionUnetTimmWorkspaceNoEnv(BaseWorkspace):
         # Configure dataset
         dataset: BaseImageDataset = hydra.utils.instantiate(cfg.task.dataset)
         assert isinstance(dataset, BaseImageDataset)
+
+        # Image augmentation runs batched on the GPU inside the training loop instead
+        # of per-sample on CPU dataloader workers (torchvision ColorJitter's hue term
+        # was the dominant data-loading cost). Capture the augmentation config, then
+        # disable the dataset's CPU transforms BEFORE the dataloader forks its workers
+        # so workers just return raw uint8 frames.
+        def _resolve_aug_cfg(node):
+            if node is None:
+                return None
+            return OmegaConf.to_container(node, resolve=True) if OmegaConf.is_config(node) else node
+
+        ds_cfg = cfg.task.dataset
+        train_augmentor = BatchImageAugmentor(
+            color_jitter=_resolve_aug_cfg(getattr(ds_cfg, "color_jitter", None)),
+            random_rotation=_resolve_aug_cfg(getattr(ds_cfg, "random_rotation", None)),
+        )
+        if train_augmentor.enabled:
+            dataset.transforms = None
+            dataset.rotation_transforms = None
+            accelerator.print(
+                "Image augmentation moved to GPU (batched). CPU dataset transforms disabled."
+            )
+        else:
+            train_augmentor = None
 
         # Create training dataloader.
         # For multi-GPU: use DistributedSampler so each process sees a disjoint shard.
@@ -358,6 +383,15 @@ class TrainDiffusionUnetTimmWorkspaceNoEnv(BaseWorkspace):
                         batch = dict_apply(batch, lambda x: x.to(device, non_blocking=True))
                         for key in dataset.rgb_keys:
                             batch["obs"][key] = torch.moveaxis(batch["obs"][key], -1, 2) / 255.0
+
+                        # Batched GPU image augmentation (train only). One random
+                        # transform per sample, shared across cameras and timesteps.
+                        if train_augmentor is not None:
+                            aug = train_augmentor(
+                                {key: batch["obs"][key] for key in dataset.rgb_keys}
+                            )
+                            for key in dataset.rgb_keys:
+                                batch["obs"][key] = aug[key]
 
                         with accelerator.accumulate(self.model):
                             raw_loss = self.model(batch)
